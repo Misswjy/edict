@@ -61,7 +61,7 @@
     /* state colors */
     .st-Inbox{border-color:#3a4a7a44;color:#7a9aff;background:#0a1028}
     .st-Zhongshu{border-color:#a07aff44;color:#a07aff;background:#110a28}
-    .st-Taizi{border-color:#e8a04044;color:#e8a040;background:#281a08}
+    .st-Sili{border-color:#e8a04044;color:#e8a040;background:#281a08}
     .st-Menxia{border-color:#ff9a6a44;color:#ff9a6a;background:#280f0a}
     .st-Assigned,.st-Doing{border-color:#6a9eff44;color:#6a9eff;background:#0a1428}
     .st-Review{border-color:#f5c84244;color:#f5c842;background:#201a08}
@@ -689,7 +689,7 @@
       <button class="ab-btn" data-filter="archived" onclick="setEdictFilter('archived')">📦 已归档</button>
       <button class="ab-btn" data-filter="all" onclick="setEdictFilter('all')">全部</button>
       <span class="ab-count" id="archive-count"></span>
-      <button class="ab-scan" id="btn-global-scan" onclick="runGlobalSchedulerScan()">🧭 太子巡检</button>
+      <button class="ab-scan" id="btn-global-scan" onclick="runGlobalSchedulerScan()">🧭 司礼监巡检</button>
       <span class="ab-scan-status" id="global-scan-status">未巡检</span>
       <button class="ab-scan-detail" id="btn-global-scan-detail" onclick="toggleGlobalScanDetails()" style="display:none">查看巡检详情</button>
       <button class="ab-scan-copy" id="btn-global-scan-copy" onclick="copyGlobalScanReport()" style="display:none">📋 复制巡检报告</button>
@@ -907,7 +907,7 @@ function restoreGlobalScanState(){
 /* ══ PIPELINE DEFINITION ══ */
 const PIPE = [
   {key:'Inbox',    dept:'皇上',   icon:'👑', action:'下旨'},
-  {key:'Taizi',    dept:'太子',   icon:'🤴', action:'分拣'},
+  {key:'Sili',    dept:'司礼监',   icon:'🧾', action:'分办'},
   {key:'Zhongshu', dept:'中书省', icon:'📜', action:'起草'},
   {key:'Menxia',   dept:'门下省', icon:'🔍', action:'审议'},
   {key:'Assigned', dept:'尚书省', icon:'📮', action:'派发'},
@@ -915,10 +915,10 @@ const PIPE = [
   {key:'Review',   dept:'尚书省', icon:'🔎', action:'汇总'},
   {key:'Done',     dept:'回奏',   icon:'✅', action:'完成'},
 ];
-const PIPE_STATE_IDX = {Inbox:0,Pending:0,Taizi:1,Zhongshu:2,Menxia:3,Assigned:4,Doing:5,Review:6,Done:7,Blocked:5,Cancelled:5,Next:4};
+const PIPE_STATE_IDX = {Inbox:0,Pending:0,Sili:1,Zhongshu:2,Menxia:3,Assigned:4,Doing:5,Review:6,Done:7,Blocked:5,Cancelled:5,Next:4};
 
 /* ══ DEPT COLORS ══ */
-const DEPT_COLOR = {'太子':'#e8a040','中书省':'#a07aff','门下省':'#6a9eff','尚书省':'#6aef9a','礼部':'#f5c842','户部':'#ff9a6a','兵部':'#ff5270','刑部':'#cc4444','工部':'#44aaff','吏部':'#9b59b6','皇上':'#ffd700','回奏':'#2ecc8a'};
+const DEPT_COLOR = {'司礼监':'#e8a040','中书省':'#a07aff','门下省':'#6a9eff','尚书省':'#6aef9a','礼部':'#f5c842','户部':'#ff9a6a','兵部':'#ff5270','刑部':'#cc4444','工部':'#44aaff','吏部':'#9b59b6','皇上':'#ffd700','回奏':'#2ecc8a'};
 function deptColor(d){return DEPT_COLOR[d]||'#6a9eff'}
 
 /* ══ UTILS ══ */
@@ -926,7 +926,7 @@ const esc=s=>s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g
 async function fetchJ(u){const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw Error(r.status);return r.json()}
 async function postJ(u,d){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});return r.json()}
 function toast(msg,type='ok',ms=3000){const el=document.createElement('div');el.className=`toast ${type}`;el.textContent=msg;document.getElementById('toaster').appendChild(el);setTimeout(()=>el.remove(),ms)}
-const STATE_LABEL={Inbox:'收件',Pending:'待处理',Taizi:'太子分拣',Zhongshu:'中书起草',Menxia:'门下审议',Assigned:'已派发',Doing:'执行中',Review:'待审查',Done:'已完成',Blocked:'阻塞',Cancelled:'已取消',Next:'待执行'};
+const STATE_LABEL={Inbox:'收件',Pending:'待处理',Sili:'司礼监分办',Zhongshu:'中书起草',Menxia:'门下审议',Assigned:'已派发',Doing:'执行中',Review:'待审查',Done:'已完成',Blocked:'阻塞',Cancelled:'已取消',Next:'待执行'};
 // 根据轮次动态生成状态标签
 function stateLabel(t){
   const r = t.review_round||0;
@@ -983,7 +983,7 @@ function renderEdicts(tasks){
   else if(edictFilter==='archived') edicts = archivedEdicts;
   else edicts = allEdicts;
   edicts.sort((a,b) => {
-    const order = {Doing:0,Review:1,Assigned:2,Menxia:3,Zhongshu:4,Taizi:5,Inbox:6,Blocked:7,Next:8,Done:9,Cancelled:10};
+    const order = {Doing:0,Review:1,Assigned:2,Menxia:3,Zhongshu:4,Sili:5,Inbox:6,Blocked:7,Next:8,Done:9,Cancelled:10};
     return (order[a.state]??9) - (order[b.state]??9);
   });
   // Tab badge = active count only
@@ -996,7 +996,7 @@ function renderEdicts(tasks){
   document.getElementById('btn-archive-done').style.display = unArchivedDone.length ? '' : 'none';
   const el = document.getElementById('edict-grid');
   if(!edicts.length){
-    el.innerHTML='<div class="empty" style="grid-column:1/-1">暂无旨意<br><small style="font-size:11px;margin-top:6px;display:block;color:var(--muted)">通过飞书向太子发送任务，太子分拣后转中书省处理</small></div>';
+    el.innerHTML='<div class="empty" style="grid-column:1/-1">暂无旨意<br><small style="font-size:11px;margin-top:6px;display:block;color:var(--muted)">通过飞书向司礼监发送任务，司礼监分办后转中书省处理</small></div>';
     return;
   }
   el.innerHTML = edicts.map(t => {
@@ -1069,7 +1069,7 @@ function renderAgentsStatus(data){
   if(!data||!data.ok) return;
   const gw = data.gateway||{};
   const agents = data.agents||[];
-  // 跳过 main（和 taizi 重复）
+  // 跳过 main（和 sili 重复）
   const filtered = agents.filter(a=>a.id!=='main');
   const running = filtered.filter(a=>a.status==='running').length;
   const idle = filtered.filter(a=>a.status==='idle').length;
@@ -1140,7 +1140,7 @@ async function wakeAllAgents(){
 /* ══ DEPT MONITOR ══ */
 function renderMonitor(tasks){
   const DEPTS = [
-    {id:'taizi',   label:'太子',  emoji:'🤴',role:'太子',    rank:'储君'},
+    {id:'sili',   label:'司礼监',  emoji:'🧾',role:'掌印秉笔',rank:'内廷'},
     {id:'zhongshu',label:'中书省',emoji:'📜',role:'中书令',  rank:'正一品'},
     {id:'menxia',  label:'门下省',emoji:'🔍',role:'侍中',    rank:'正一品'},
     {id:'shangshu',label:'尚书省',emoji:'📮',role:'尚书令',  rank:'正一品'},
@@ -1270,13 +1270,13 @@ function openTask(id){
       ${canResume ? `<button class="btn-action btn-resume" onclick="taskAction('${esc(t.id)}','resume','恢复执行')">▶️ 恢复执行</button>` : ''}
       ${['Review','Menxia'].includes(t.state) ? `<button class="btn-action" style="background:#2ecc8a22;color:#2ecc8a;border:1px solid #2ecc8a44" onclick="reviewAction('${esc(t.id)}','approve')">✅ 准奏</button>
       <button class="btn-action" style="background:#ff527022;color:#ff5270;border:1px solid #ff527044" onclick="reviewAction('${esc(t.id)}','reject')">🚫 封驳</button>` : ''}
-      ${['Pending','Taizi','Zhongshu','Menxia','Assigned','Doing','Review','Next'].includes(t.state) ? `<button class="btn-action" style="background:#7c5cfc18;color:#7c5cfc;border:1px solid #7c5cfc44" onclick="advanceState('${esc(t.id)}','${esc(t.state)}')">⏩ 推进到下一步</button>` : ''}
+      ${['Pending','Sili','Zhongshu','Menxia','Assigned','Doing','Review','Next'].includes(t.state) ? `<button class="btn-action" style="background:#7c5cfc18;color:#7c5cfc;border:1px solid #7c5cfc44" onclick="advanceState('${esc(t.id)}','${esc(t.state)}')">⏩ 推进到下一步</button>` : ''}
     </div>
 
-    <!-- 太子调度 -->
+    <!-- 司礼监调度 -->
     <div class="sched-section">
       <div class="sched-head">
-        <span class="sched-title">🧭 太子调度</span>
+        <span class="sched-title">🧭 司礼监调度</span>
         <span class="sched-status" id="sched-status">加载中...</span>
       </div>
       <div class="sched-grid" id="sched-grid">
@@ -1547,7 +1547,7 @@ function renderLiveActivity(data){
   const phaseBar = document.getElementById('la-phase-bar');
   if(phaseBar && data.phaseDurations && data.phaseDurations.length){
     const maxDur = Math.max(...data.phaseDurations.map(p=>p.durationSec||1), 1);
-    const phaseColors = {'皇上':'#eab308','太子':'#f97316','中书省':'#3b82f6','门下省':'#8b5cf6','尚书省':'#10b981','六部':'#06b6d4','礼部':'#ec4899','户部':'#f59e0b','兵部':'#ef4444','刑部':'#6366f1','工部':'#14b8a6','吏部':'#d946ef'};
+    const phaseColors = {'皇上':'#eab308','司礼监':'#f97316','中书省':'#3b82f6','门下省':'#8b5cf6','尚书省':'#10b981','六部':'#06b6d4','礼部':'#ec4899','户部':'#f59e0b','兵部':'#ef4444','刑部':'#6366f1','工部':'#14b8a6','吏部':'#d946ef'};
     let totalDurText = data.totalDuration ? `<span style="margin-left:auto;font-size:10px;color:var(--muted)">总耗时 ${data.totalDuration}</span>` : '';
     phaseBar.innerHTML = `<div style="padding:4px 0 8px;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><span style="font-size:11px;font-weight:600;color:var(--fg)">⏱ 阶段耗时</span>${totalDurText}</div>
@@ -1612,7 +1612,7 @@ function renderLiveActivity(data){
   if(dot){dot.classList.toggle('idle',!isActive);}
 
   // Agent label map
-  const _agentLabels={main:'太子',zhongshu:'中书省',menxia:'门下省',shangshu:'尚书省',libu:'礼部',hubu:'户部',bingbu:'兵部',xingbu:'刑部',gongbu:'工部',libu_hr:'吏部',zaochao:'钦天监'};
+  const _agentLabels={main:'司礼监',zhongshu:'中书省',menxia:'门下省',shangshu:'尚书省',libu:'礼部',hubu:'户部',bingbu:'兵部',xingbu:'刑部',gongbu:'工部',libu_hr:'吏部',zaochao:'钦天监'};
 
   const renderEntry=(a)=>{
     const time=a.at?fmtActivityTime(a.at):'';
@@ -2125,7 +2125,7 @@ function extractAgent(t){
   const sm = t.sourceMeta||{};
   if(sm.agentId){
     // "mc-gateway-xxx" → try to match known agents
-    const known = ['taizi','zhongshu','menxia','shangshu','hubu','libu','bingbu','xingbu','gongbu','zaochao'];
+    const known = ['sili','zhongshu','menxia','shangshu','hubu','libu','bingbu','xingbu','gongbu','zaochao'];
     for(const k of known){ if(sm.agentId.includes(k)) return k; }
   }
   return (t.org||'').replace(/省|部/g,'').toLowerCase();
@@ -2577,7 +2577,7 @@ async function reviewAction(taskId, action){
 }
 
 /* ══ ADVANCE STATE (手动推进到下一步) ══ */
-const _NEXT_LABELS = {Taizi:'中书省起草', Zhongshu:'门下省审议', Menxia:'尚书省派发', Assigned:'开始执行', Doing:'进入审查', Review:'完成'};
+const _NEXT_LABELS = {Sili:'中书省起草', Zhongshu:'门下省审议', Menxia:'尚书省派发', Assigned:'开始执行', Doing:'进入审查', Review:'完成'};
 async function advanceState(taskId, curState){
   const next = _NEXT_LABELS[curState] || '下一步';
   const comment = prompt(`⏩ 手动推进 ${taskId}\n当前: ${curState} → 下一步: ${next}\n\n请输入说明（可留空）：`);
@@ -2646,7 +2646,7 @@ async function runGlobalSchedulerScan(){
       }
       persistGlobalScanState({checkedAt: r.checkedAt || '', count});
       renderGlobalScanDetails();
-      toast(`🧭 太子巡检完成：${count} 个动作`,'ok');
+      toast(`🧭 司礼监巡检完成：${count} 个动作`,'ok');
       loadAll();
     }else{
       if(st) st.textContent = '巡检失败';
@@ -2701,7 +2701,7 @@ function buildGlobalScanReport(){
   const checked = globalScanCheckedAt ? globalScanCheckedAt.replace('T',' ').replace('Z','') : '未知时间';
   const count = Number(globalScanCount || globalScanActions.length || 0);
   const lines = [
-    '【太子巡检报告】',
+    '【司礼监巡检报告】',
     `时间: ${checked}`,
     `动作数: ${count}`,
     '',

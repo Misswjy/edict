@@ -7,12 +7,12 @@
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 业务层：帝国制度 (Imperial Governance Model)
-  ├─ 分权制衡：皇上 → 太子 → 中书 → 门下 → 尚书 → 六部
+  ├─ 分权制衡：皇上 → 司礼监 → 中书 → 门下 → 尚书 → 六部
   ├─ 制度约束：不可越级、状态严格递进、门下必审议
   └─ 质量保障：可封驳反工、实时可观测、紧急可干预
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 技术层：OpenClaw多Agent编排 (Multi-Agent Orchestration)
-  ├─ 状态机：9个状态（Pending → Taizi → Zhongshu → Menxia → Assigned → Doing/Next → Review → Done/Cancelled）
+  ├─ 状态机：9个状态（Pending → Sili → Zhongshu → Menxia → Assigned → Doing/Next → Review → Done/Cancelled）
   ├─ 数据融合：flow_log + progress_log + session JSONL → unified activity stream
   ├─ 权限矩阵：严格的subagent调用权限控制
   └─ 调度层：自动派发、超时重试、停滞升级、自动回滚
@@ -45,8 +45,8 @@
               (User)
                │
                ↓
-             太子 (Taizi)
-        [分拣官、消息接入总负责]
+             司礼监 (Sili)
+        [承旨官、消息接入总负责]
       ├─ 识别：这是旨意还是闲聊？
       ├─ 执行：直接回复闲聊 || 建立任务→转中书
       └─ 权限：只能调用 中书省
@@ -117,8 +117,8 @@
 ```mermaid
 stateDiagram-v2
 [*] --> Pending: 皇上下旨
-Pending --> Taizi: 太子接旨
-Taizi --> Zhongshu: 太子转交中书
+Pending --> Sili: 司礼监接旨
+Sili --> Zhongshu: 司礼监转交中书
 Zhongshu --> Menxia: 中书提交审议
 Menxia --> Zhongshu: 门下封驳(可多次)
 Menxia --> Assigned: 门下准奏
@@ -138,13 +138,13 @@ Review --> [*]: 业务终止
 ```
 DAY 1:
   10:00 - 皇上飞书："为三省六部编写完整自动化测试方案"
-          太子接旨。state = Taizi, org = 太子
-          自动派发 taizi agent → 处理此旨意
+          司礼监接旨。state = Sili, org = 司礼监
+          自动派发 sili agent → 处理此旨意
   
-  10:30 - 太子分拣完毕。判定为「工作旨意」（非闲聊）
+  10:30 - 司礼监分办完毕。判定为「工作旨意」（非闲聊）
           建任务 JJC-20260228-E2E
-          flow_log 记录："皇上 → 太子：下旨"
-          state: Taizi → Zhongshu, org: 太子 → 中书省
+          flow_log 记录："皇上 → 司礼监：下旨"
+          state: Sili → Zhongshu, org: 司礼监 → 中书省
           自动派发 zhongshu agent
 
 DAY 2:
@@ -260,14 +260,14 @@ DAY 7：全部完成（比理想路径晚1-2天）
     {
       "at": "2026-02-28T10:00:00Z",
       "from": "皇上",
-      "to": "太子",
+      "to": "司礼监",
       "remark": "下旨：为三省六部编写完整自动化测试方案"
     },
     {
       "at": "2026-02-28T10:30:00Z",
-      "from": "太子",
+      "from": "司礼监",
       "to": "中书省",
-      "remark": "分拣→传旨"
+      "remark": "分办→传旨"
     },
     {
       "at": "2026-02-28T15:00:00Z",
@@ -344,8 +344,8 @@ DAY 7：全部完成（比理想路径晚1-2天）
 
 | 契约 | 含义 | 违反后果 |
 |------|------|---------|
-| **不可越级** | 太子只能调中书，中书只能调门下/尚书，六部不能对外调用 | 超权调用被拒绝，系统自动拦截 |
-| **状态单向递进** | Pending → Taizi → Zhongshu → ... → Done，不能跳过或倒退 | 只能通过 review_action(reject) 返回上一步 |
+| **不可越级** | 司礼监只能调中书，中书只能调门下/尚书，六部不能对外调用 | 超权调用被拒绝，系统自动拦截 |
+| **状态单向递进** | Pending → Sili → Zhongshu → ... → Done，不能跳过或倒退 | 只能通过 review_action(reject) 返回上一步 |
 | **门下必审** | 所有中书提出的方案都要门下省审议，无法跳过 | 中书不能直接转尚书，门下必入 |
 | **一旦Done无改** | 任务进入Done/Cancelled后不能再修改状态 | 若需修改需要创建新任务或取消后重新建 |
 | **task_id唯一性** | JJC-日期-序号 全局唯一，同一天同一任务不重复建 | 看板防重，自动去重 |
@@ -361,14 +361,14 @@ DAY 7：全部完成（比理想路径晚1-2天）
 
 ```python
 _STATE_FLOW = {
-    'Pending':  ('Taizi',   '皇上',    '太子',    '待处理旨意转交太子分拣'),
-    'Taizi':    ('Zhongshu','太子',    '中书省',  '太子分拣完毕，转中书省起草'),
+    'Pending':  ('Sili',   '皇上',    '司礼监',    '待处理旨意转交司礼监分办'),
+    'Sili':    ('Zhongshu','司礼监',    '中书省',  '司礼监分办完毕，转中书省起草'),
     'Zhongshu': ('Menxia',  '中书省',  '门下省',  '中书省方案提交门下省审议'),
     'Menxia':   ('Assigned','门下省',  '尚书省',  '门下省准奏，转尚书省派发'),
     'Assigned': ('Doing',   '尚书省',  '六部',    '尚书省开始派发执行'),
     'Next':     ('Doing',   '尚书省',  '六部',    '待执行任务开始执行'),
     'Doing':    ('Review',  '六部',    '尚书省',  '各部完成，进入汇总'),
-    'Review':   ('Done',    '尚书省',  '太子',    '全流程完成，回奏太子转报皇上'),
+    'Review':   ('Done',    '尚书省',  '司礼监',    '全流程完成，回奏司礼监转报皇上'),
 }
 ```
 
@@ -376,7 +376,7 @@ _STATE_FLOW = {
 
 ```python
 _STATE_AGENT_MAP = {
-    'Taizi':    'taizi',
+    'Sili':    'sili',
     'Zhongshu': 'zhongshu',
     'Menxia':   'menxia',
     'Assigned': 'shangshu',
@@ -398,7 +398,7 @@ _STATE_AGENT_MAP = {
    └─ 若无法推断则跳过派发（如 Done/Cancelled）
 
 2. 构造派发消息（针对性促使Agent立即工作）
-   ├─ taizi: "📜 皇上旨意需要你处理..."
+   ├─ sili: "📜 皇上旨意需要你处理..."
    ├─ zhongshu: "📜 旨意已到中书省，请起草方案..."
    ├─ menxia: "📋 中书省方案提交审议..."
    ├─ shangshu: "📮 门下省已准奏，请派发执行..."
@@ -436,8 +436,8 @@ _STATE_AGENT_MAP = {
 {
   "agents": [
     {
-      "id": "taizi",
-      "label": "太子",
+      "id": "sili",
+      "label": "司礼监",
       "allowAgents": ["zhongshu"]
     },
     {
@@ -643,7 +643,7 @@ def _parse_activity_entry(item):
 ```
 kind    count  代表事件
 ────────────────────────────────────────────────
-flow      10   状态转移链（Pending→Taizi→Zhongshu→...）
+flow      10   状态转移链（Pending→Sili→Zhongshu→...）
 progress  11   Agent工作汇报（"正在分析"、"已完成"）
 todos     11   待办任务快照（进度更新时每条）
 user       1   用户反馈（如"需要补充性能测试"）
@@ -718,7 +718,7 @@ FOR EACH 任务:
   IF retryCount < maxRetry:
     ✅ 执行【重试】
     - increment retryCount
-    - dispatch_for_state(task, new_state, trigger='taizi-scan-retry')
+    - dispatch_for_state(task, new_state, trigger='sili-scan-retry')
     - flow_log: "停滞180秒，触发自动重试第N次"
     - NEXT task
   
@@ -763,7 +763,7 @@ T+180:
   
   ✅ 阶段1：重试
   - retryCount: 0 → 1
-  - dispatch_for_state('JJC-20260228-E2E', 'Zhongshu', trigger='taizi-scan-retry')
+  - dispatch_for_state('JJC-20260228-E2E', 'Zhongshu', trigger='sili-scan-retry')
   - 派发消息发送到中书省（唤醒agent或重启）
   - flow_log: "停滞180秒，自动重试第1次"
 
@@ -805,7 +805,7 @@ T+720 (若仍未解决):
   ✅ 阶段4：自动回滚
   - snapshot.state = 'Assigned' (前一个稳定状态)
   - task.state: Zhongshu → Assigned
-  - dispatch_for_state('JJC-20260228-E2E', 'Assigned', trigger='taizi-auto-rollback')
+  - dispatch_for_state('JJC-20260228-E2E', 'Assigned', trigger='sili-auto-rollback')
   - flow_log: "连续停滞，自动回滚到Assigned，由尚书省重新派发"
   
   结果：
@@ -826,7 +826,7 @@ T+720 (若仍未解决):
 请求：
 {
   "title": "为三省六部编写完整自动化测试方案",
-  "org": "中书省",           // 可选，默认太子
+  "org": "中书省",           // 可选，默认司礼监
   "official": "中书令",      // 可选
   "priority": "normal",
   "template_id": "test_plan", // 可选
@@ -838,7 +838,7 @@ T+720 (若仍未解决):
 {
   "ok": true,
   "taskId": "JJC-20260228-001",
-  "message": "旨意 JJC-20260228-001 已下达，正在派发给太子"
+  "message": "旨意 JJC-20260228-001 已下达，正在派发给司礼监"
 }
 ```
 
@@ -870,7 +870,7 @@ GET /api/task-activity/JJC-20260228-E2E
       "at": "2026-02-28T10:00:00Z",
       "kind": "flow",
       "from": "皇上",
-      "to": "太子",
+      "to": "司礼监",
       "remark": "下旨：为三省六部编写完整自动化测试方案"
     },
     // progress_log (11条)
@@ -926,10 +926,10 @@ GET /api/task-activity/JJC-20260228-E2E
   ],
   
   "activitySource": "progress+session",
-  "relatedAgents": ["taizi", "zhongshu", "menxia"],
+  "relatedAgents": ["sili", "zhongshu", "menxia"],
   "phaseDurations": [
     {
-      "phase": "太子",
+      "phase": "司礼监",
       "durationText": "30分",
       "ongoing": false
     },
@@ -1013,7 +1013,7 @@ OR 请求（封驳）：
 
 Agent 通过此工具与看板交互，共7个命令：
 
-#### 命令1：创建任务（太子或中书手工）
+#### 命令1：创建任务（司礼监或中书手工）
 
 ```bash
 python3 scripts/kanban_update.py create \
@@ -1036,7 +1036,7 @@ python3 scripts/kanban_update.py state \
 
 # 说明：
 # - 第一个参数：task_id
-# - 第二个参数：新状态（Pending/Taizi/Zhongshu/...）
+# - 第二个参数：新状态（Pending/Sili/Zhongshu/...）
 # - 第三个参数：可选，描述信息（会记录到 now 字段）
 # 
 # 效果：
@@ -1119,7 +1119,7 @@ python3 scripts/kanban_update.py done \
 # 效果：
 # - task.state = Done（从 Review 推进）
 # - task.output = "https://..."
-# - 自动发送Feishu消息给皇上（太子转报）
+# - 自动发送Feishu消息给皇上（司礼监转报）
 # - flow_log 记录完成转移
 ```
 
@@ -1206,7 +1206,7 @@ if task.state == 'Zhongshu' and agent_id == 'zhongshu':
 
 ```
 症状：任务卡在某个状态，180秒无新进展
-报警：太子调度系统检测到停滞
+报警：司礼监调度系统检测到停滞
 
 自动处理流程：
   T+0: 崩溃
@@ -1270,10 +1270,10 @@ except PermissionError:
 
 # 门下省想升级到皇上
 try:
-    result = dispatch_to_agent('taizi', '我需要皇上的指示')
+    result = dispatch_to_agent('sili', '我需要皇上的指示')
 except PermissionError:
     # ❌ 权限矩阵拦截
-    log.error('menxia 无权调用 taizi')
+    log.error('menxia 无权调用 sili')
 ```
 
 ---
@@ -1289,7 +1289,7 @@ except PermissionError:
 
 2. 按状态分类
    ├─ Pending（待处理）
-   ├─ Taizi（太子分拣中）
+   ├─ Sili（司礼监分办中）
    ├─ Zhongshu（中书规划中）
    ├─ Menxia（门下审议中）
    ├─ Assigned（尚书派发中）
@@ -1298,7 +1298,7 @@ except PermissionError:
    └─ Done/Cancelled（已完成/已取消）
 
 3. 按部门分类
-   ├─ 太子任务
+   ├─ 司礼监任务
    ├─ 中书省任务
    ├─ 门下省任务
    ├─ 尚书省任务
@@ -1362,8 +1362,8 @@ GET /api/agents-status
   },
   "agents": [
     {
-      "id": "taizi",
-      "label": "太子",
+      "id": "sili",
+      "label": "司礼监",
       "status": "running",        // running|idle|offline|unconfigured
       "statusLabel": "🟢 运行中",
       "lastActive": "03-02 14:30", // 最后活跃时间
@@ -1396,18 +1396,18 @@ curl -X POST http://127.0.0.1:7891/api/create-task \
   }'
 
 # 响应：JJC-20260302-001 已创建
-# 太子Agent 收到通知："📜 皇上旨意..."
+# 司礼监Agent 收到通知："📜 皇上旨意..."
 
 # ═══════════════════════════════════════════════════════════
-# 第2步：太子接旨分拣（Agent自动）
+# 第2步：司礼监接旨分办（Agent自动）
 # ═══════════════════════════════════════════════════════════
 
-# 太子Agent 判定：这是"工作旨意"（非闲聊）
+# 司礼监Agent 判定：这是"工作旨意"（非闲聊）
 # 自动运行：
 python3 scripts/kanban_update.py state \
   JJC-20260302-001 \
   Zhongshu \
-  "分拣完毕，转中书省起草"
+  "分办完毕，转中书省起草"
 
 # 中书省Agent 收到派发通知
 
@@ -1544,7 +1544,7 @@ python3 scripts/kanban_update.py state \
   Review \
   "所有部门完成，进入审查阶段"
 
-# 皇上/太子收到通知，审查最终成果
+# 皇上/司礼监收到通知，审查最终成果
 
 # ═══════════════════════════════════════════════════════════
 # 第8步：完成（终态）

@@ -42,8 +42,8 @@ def state_from_session(age_ms, aborted):
 
 def detect_official(agent_id):
     mapping = {
-        'main':    ('储君', '太子'),        # legacy id for taizi
-        'taizi':   ('储君', '太子'),
+        'main':    ('掌印秉笔', '司礼监'),    # legacy id for sili
+        'sili':    ('掌印秉笔', '司礼监'),
         'zhongshu': ('中书令', '中书省'),
         'menxia':  ('侍中', '门下省'),
         'shangshu': ('尚书令', '尚书省'),

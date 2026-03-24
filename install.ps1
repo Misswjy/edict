@@ -76,7 +76,7 @@ function Backup-Existing {
 function Create-Workspaces {
     Info "创建 Agent Workspace..."
 
-    $agents = @("taizi","zhongshu","menxia","shangshu","hubu","libu","bingbu","xingbu","gongbu","libu_hr","zaochao")
+    $agents = @("sili","zhongshu","menxia","shangshu","hubu","libu","bingbu","xingbu","gongbu","libu_hr","zaochao")
     foreach ($agent in $agents) {
         $ws = Join-Path $OC_HOME "workspace-$agent"
         New-Item -ItemType Directory -Path (Join-Path $ws "skills") -Force | Out-Null
@@ -122,7 +122,7 @@ cfg_path = pathlib.Path(os.environ['USERPROFILE']) / '.openclaw' / 'openclaw.jso
 cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
 
 AGENTS = [
-    {"id": "taizi",    "subagents": {"allowAgents": ["zhongshu"]}},
+    {"id": "sili",    "subagents": {"allowAgents": ["zhongshu"]}},
     {"id": "zhongshu", "subagents": {"allowAgents": ["menxia", "shangshu"]}},
     {"id": "menxia",   "subagents": {"allowAgents": ["shangshu", "zhongshu"]}},
     {"id": "shangshu", "subagents": {"allowAgents": ["zhongshu", "menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]}},
@@ -186,7 +186,7 @@ function Init-Data {
 function Link-Resources {
     Info "创建 data/scripts 目录连接..."
     $linked = 0
-    $agents = @("taizi","zhongshu","menxia","shangshu","hubu","libu","bingbu","xingbu","gongbu","libu_hr","zaochao")
+    $agents = @("sili","zhongshu","menxia","shangshu","hubu","libu","bingbu","xingbu","gongbu","libu_hr","zaochao")
     foreach ($agent in $agents) {
         $ws = Join-Path $OC_HOME "workspace-$agent"
         New-Item -ItemType Directory -Path $ws -Force | Out-Null
@@ -298,7 +298,7 @@ Write-Host "╚═════════════════════�
 Write-Host ""
 Write-Host "下一步："
 Write-Host "  1. 配置 API Key（如尚未配置）:"
-Write-Host "     openclaw agents add taizi     # 按提示输入 Anthropic API Key"
+Write-Host "     openclaw agents add sili     # 按提示输入 Anthropic API Key"
 Write-Host "     .\install.ps1                 # 重新运行以同步到所有 Agent"
 Write-Host "  2. 启动数据刷新循环:  Start-Process python3 -ArgumentList 'scripts/run_loop.sh'"
 Write-Host "  3. 启动看板服务器:    python3 dashboard/server.py"

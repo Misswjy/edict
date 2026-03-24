@@ -11,7 +11,7 @@ import type {
 } from '../api';
 
 const AGENT_LABELS: Record<string, string> = {
-  main: '太子',
+  main: '司礼监',
   zhongshu: '中书省',
   menxia: '门下省',
   shangshu: '尚书省',
@@ -25,7 +25,7 @@ const AGENT_LABELS: Record<string, string> = {
 };
 
 const NEXT_LABELS: Record<string, string> = {
-  Taizi: '中书省起草',
+  Sili: '中书省起草',
   Zhongshu: '门下省审议',
   Menxia: '尚书省派发',
   Assigned: '开始执行',
@@ -281,7 +281,7 @@ export default function TaskModal() {
                 <button className="btn-action" style={{ background: '#ff527022', color: '#ff5270', border: '1px solid #ff527044' }} onClick={() => doReview('reject')}>🚫 封驳</button>
               </>
             )}
-            {['Pending', 'Taizi', 'Zhongshu', 'Menxia', 'Assigned', 'Doing', 'Review', 'Next'].includes(task.state) && (
+            {['Pending', 'Sili', 'Zhongshu', 'Menxia', 'Assigned', 'Doing', 'Review', 'Next'].includes(task.state) && (
               <button className="btn-action" style={{ background: '#7c5cfc18', color: '#7c5cfc', border: '1px solid #7c5cfc44' }} onClick={doAdvance}>⏩ 推进到下一步</button>
             )}
           </div>
@@ -289,7 +289,7 @@ export default function TaskModal() {
           {/* Scheduler Section */}
           <div className="sched-section">
             <div className="sched-head">
-              <span className="sched-title">🧭 太子调度</span>
+              <span className="sched-title">🧭 司礼监调度</span>
               <span className="sched-status">
                 {sched ? `${sched.enabled === false ? '已禁用' : '运行中'} · 阈值 ${sched.stallThresholdSec || 180}s` : '加载中...'}
               </span>
@@ -464,7 +464,7 @@ function LiveActivitySection({
   const phaseDurations = data.phaseDurations || [];
   const maxDur = Math.max(...phaseDurations.map((p) => p.durationSec || 1), 1);
   const phaseColors: Record<string, string> = {
-    '皇上': '#eab308', '太子': '#f97316', '中书省': '#3b82f6', '门下省': '#8b5cf6',
+    '皇上': '#eab308', '司礼监': '#f97316', '中书省': '#3b82f6', '门下省': '#8b5cf6',
     '尚书省': '#10b981', '六部': '#06b6d4', '礼部': '#ec4899', '户部': '#f59e0b',
     '兵部': '#ef4444', '刑部': '#6366f1', '工部': '#14b8a6', '吏部': '#d946ef',
   };

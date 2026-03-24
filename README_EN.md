@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <sub>12 AI agents (11 business roles + 1 compatibility role) form the Three Departments & Six Ministries: Crown Prince triages, Planning proposes, Review vetoes, Dispatch assigns, Ministries execute.<br>Built-in <b>institutional review gates</b> that CrewAI doesn't have. A <b>real-time dashboard</b> that AutoGen doesn't have.</sub>
+  <sub>12 AI agents (11 business roles + 1 compatibility role) form the Three Departments & Six Ministries: Sili Jian receives and relays, Planning proposes, Review vetoes, Dispatch assigns, Ministries execute.<br>Built-in <b>institutional review gates</b> that CrewAI doesn't have. A <b>real-time dashboard</b> that AutoGen doesn't have.</sub>
 </p>
 
 <p align="center">
@@ -47,7 +47,7 @@
 <p align="center">
   <img src="docs/demo.gif" alt="Edict Demo" width="100%">
   <br>
-  <sub>Issue edict → Crown Prince triage → Planning → Review → Ministries execute → Report back (30s)</sub>
+  <sub>Issue edict → Sili Jian intake → Planning → Review → Ministries execute → Report back (30s)</sub>
 </p>
 </details>
 
@@ -60,13 +60,13 @@
 Most multi-agent frameworks let AI agents talk freely, producing opaque results you can't audit or intervene in. **Edict** takes a radically different approach — borrowing the governance system that ran China for 1,400 years:
 
 ```
-You (Emperor) → Crown Prince (Triage) → Planning Dept → Review Dept → Dispatch Dept → 6 Ministries → Report Back
-   皇上              太子               中书省          门下省         尚书省           六部          回奏
+You (Emperor) → Sili Jian (Intake) → Planning Dept → Review Dept → Dispatch Dept → 6 Ministries → Report Back
+   皇上              司礼监               中书省          门下省         尚书省           六部          回奏
 ```
 
 This isn't a cute metaphor. It's **real separation of powers** for AI:
 
-- **Crown Prince (太子)** triages messages — casual chat gets auto-replied, real commands become tasks
+- **Sili Jian (司礼监)** receives edicts, filters chat, and relays memorials — casual chat gets auto-replied, real commands become tasks
 - **Planning (中书省)** breaks your command into actionable sub-tasks
 - **Review (门下省)** audits the plan — can reject and force re-planning
 - **Dispatch (尚书省)** assigns approved tasks to specialist ministries
@@ -118,7 +118,7 @@ This is why Edict produces reliable results on complex tasks: there's a mandator
 ## ✨ Features
 
 ### 🏛️ Twelve-Department Agent Architecture
-- **Crown Prince** (太子) message triage — auto-reply casual chat, create tasks for real commands
+- **Sili Jian** (司礼监) intake and relay — auto-reply casual chat, create tasks for real commands
 - **Three Departments** (Planning · Review · Dispatch) for governance
 - **Seven Ministries** (Finance · Docs · Engineering · Compliance · Infrastructure · HR + Briefing) for execution
 - Strict permission matrix — who can message whom is enforced
@@ -204,7 +204,7 @@ chmod +x install.sh && ./install.sh
 ```
 
 The installer automatically:
-- Creates workspaces for all departments (`~/.openclaw/workspace-*`, including Crown Prince/HR/Briefing)
+- Creates workspaces for all departments (`~/.openclaw/workspace-*`, including Sili Jian/HR/Briefing)
 - Writes SOUL.md personality files for each department
 - Registers agents + permission matrix in `openclaw.json`
 - Initializes data directory + first sync
@@ -236,8 +236,8 @@ open http://127.0.0.1:7891
                            └─────────────────┬─────────────────┘
                                              │ Issue edict
                            ┌─────────────────▼─────────────────┐
-                           │     👑 Crown Prince (太子)          │
-                           │   Triage: chat → reply / cmd → task │
+                           │      🧾 Sili Jian (司礼监)           │
+                           │ Intake: chat → reply / cmd → task  │
                            └─────────────────┬─────────────────┘
                                              │ Forward edict
                            ┌─────────────────▼─────────────────┐
@@ -269,7 +269,7 @@ open http://127.0.0.1:7891
 
 | Dept | Agent ID | Role | Expertise |
 |------|----------|------|-----------|
-| 👑 **Crown Prince** | `taizi` | Triage, summarize | Chat detection, intent extraction |
+| 🧾 **Sili Jian** | `sili` | Intake, relay | Chat detection, intent extraction |
 | 📜 **Planning** | `zhongshu` | Receive, plan, decompose | Requirements, architecture |
 | 🔍 **Review** | `menxia` | Audit, gatekeep, veto | Quality, risk, standards |
 | 📮 **Dispatch** | `shangshu` | Assign, coordinate, collect | Scheduling, tracking |
@@ -283,9 +283,9 @@ open http://127.0.0.1:7891
 
 ### Permission Matrix
 
-| From ↓ \ To → | Prince | Planning | Review | Dispatch | Ministries |
+| From ↓ \ To → | Sili Jian | Planning | Review | Dispatch | Ministries |
 |:---:|:---:|:---:|:---:|:---:|:---:|
-| **Crown Prince** | — | ✅ | | | |
+| **Sili Jian** | — | ✅ | | | |
 | **Planning** | ✅ | — | ✅ | ✅ | |
 | **Review** | | ✅ | — | ✅ | |
 | **Dispatch** | | ✅ | ✅ | — | ✅ all |
@@ -294,7 +294,7 @@ open http://127.0.0.1:7891
 ### State Machine
 
 ```
-Emperor → Prince Triage → Planning → Review → Assigned → Executing → ✅ Done
+Emperor → Sili Jian Intake → Planning → Review → Assigned → Executing → ✅ Done
                               ↑          │                       │
                               └── Veto ──┘              Blocked ──
 ```
@@ -306,7 +306,7 @@ Emperor → Prince Triage → Planning → Review → Assigned → Executing →
 ```
 edict/
 ├── agents/                     # 12 agent personality templates (SOUL.md)
-│   ├── taizi/                  #   Crown Prince (triage)
+│   ├── sili/                  #   Sili Jian (intake)
 │   ├── zhongshu/               #   Planning Dept
 │   ├── menxia/                 #   Review Dept
 │   ├── shangshu/               #   Dispatch Dept
@@ -350,7 +350,7 @@ edict/
 
 ### Phase 1 — Core Architecture ✅
 - [x] Twelve-department agent architecture + permissions
-- [x] Crown Prince triage layer (chat vs task auto-routing)
+- [x] Sili Jian intake layer (chat vs task auto-routing)
 - [x] Real-time dashboard (10 panels)
 - [x] Task stop / cancel / resume
 - [x] Memorial archive (5-phase timeline)

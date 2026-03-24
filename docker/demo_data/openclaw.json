@@ -6,7 +6,7 @@
       }
     },
     "list": [
-      {"id": "taizi", "workspace": "/app/.openclaw/workspace-taizi", "subagents": {"allowAgents": ["zhongshu"]}},
+      {"id": "sili", "workspace": "/app/.openclaw/workspace-sili", "subagents": {"allowAgents": ["zhongshu"]}},
       {"id": "zhongshu", "workspace": "/app/.openclaw/workspace-zhongshu", "subagents": {"allowAgents": ["menxia", "shangshu"]}},
       {"id": "menxia", "workspace": "/app/.openclaw/workspace-menxia", "subagents": {"allowAgents": ["shangshu", "zhongshu"]}},
       {"id": "shangshu", "workspace": "/app/.openclaw/workspace-shangshu", "subagents": {"allowAgents": ["zhongshu", "menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]}},

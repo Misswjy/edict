@@ -20,7 +20,7 @@ import {
 
 export const PIPE = [
   { key: 'Inbox',    dept: '皇上',   icon: '👑', action: '下旨' },
-  { key: 'Taizi',    dept: '太子',   icon: '🤴', action: '分拣' },
+  { key: 'Sili',     dept: '司礼监', icon: '🧾', action: '分办' },
   { key: 'Zhongshu', dept: '中书省', icon: '📜', action: '起草' },
   { key: 'Menxia',   dept: '门下省', icon: '🔍', action: '审议' },
   { key: 'Assigned', dept: '尚书省', icon: '📮', action: '派发' },
@@ -30,18 +30,18 @@ export const PIPE = [
 ] as const;
 
 export const PIPE_STATE_IDX: Record<string, number> = {
-  Inbox: 0, Pending: 0, Taizi: 1, Zhongshu: 2, Menxia: 3,
+  Inbox: 0, Pending: 0, Sili: 1, Zhongshu: 2, Menxia: 3,
   Assigned: 4, Doing: 5, Review: 6, Done: 7, Blocked: 5, Cancelled: 5, Next: 4,
 };
 
 export const DEPT_COLOR: Record<string, string> = {
-  '太子': '#e8a040', '中书省': '#a07aff', '门下省': '#6a9eff', '尚书省': '#6aef9a',
+  '司礼监': '#e8a040', '中书省': '#a07aff', '门下省': '#6a9eff', '尚书省': '#6aef9a',
   '礼部': '#f5c842', '户部': '#ff9a6a', '兵部': '#ff5270', '刑部': '#cc4444',
   '工部': '#44aaff', '吏部': '#9b59b6', '皇上': '#ffd700', '回奏': '#2ecc8a',
 };
 
 export const STATE_LABEL: Record<string, string> = {
-  Inbox: '收件', Pending: '待处理', Taizi: '太子分拣', Zhongshu: '中书起草',
+  Inbox: '收件', Pending: '待处理', Sili: '司礼监分办', Zhongshu: '中书起草',
   Menxia: '门下审议', Assigned: '已派发', Doing: '执行中', Review: '待审查',
   Done: '已完成', Blocked: '阻塞', Cancelled: '已取消', Next: '待执行',
 };
@@ -101,7 +101,7 @@ export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
 // ── DEPTS for monitor ──
 
 export const DEPTS = [
-  { id: 'taizi',    label: '太子',   emoji: '🤴', role: '太子',     rank: '储君' },
+  { id: 'sili',     label: '司礼监', emoji: '🧾', role: '掌印秉笔', rank: '内廷' },
   { id: 'zhongshu', label: '中书省', emoji: '📜', role: '中书令',   rank: '正一品' },
   { id: 'menxia',   label: '门下省', emoji: '🔍', role: '侍中',     rank: '正一品' },
   { id: 'shangshu', label: '尚书省', emoji: '📮', role: '尚书令',   rank: '正一品' },

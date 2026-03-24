@@ -43,12 +43,12 @@ from file_lock import atomic_json_read, atomic_json_update  # noqa: E402
 from utils import now_iso  # noqa: E402
 
 STATE_ORG_MAP = {
-    'Taizi': '太子', 'Zhongshu': '中书省', 'Menxia': '门下省', 'Assigned': '尚书省',
+    'Sili': '司礼监', 'Zhongshu': '中书省', 'Menxia': '门下省', 'Assigned': '尚书省',
     'Doing': '执行中', 'Review': '尚书省', 'Done': '完成', 'Blocked': '阻塞',
 }
 
 _STATE_AGENT_MAP = {
-    'Taizi': 'taizi',
+    'Sili': 'sili',
     'Zhongshu': 'zhongshu',
     'Menxia': 'menxia',
     'Assigned': 'shangshu',
@@ -63,7 +63,7 @@ _ORG_AGENT_MAP = {
 }
 
 _AGENT_LABELS = {
-    'main': '太子', 'taizi': '太子',
+    'main': '司礼监', 'sili': '司礼监',
     'zhongshu': '中书省', 'menxia': '门下省', 'shangshu': '尚书省',
     'libu': '礼部', 'hubu': '户部', 'bingbu': '兵部', 'xingbu': '刑部',
     'gongbu': '工部', 'libu_hr': '吏部', 'zaochao': '钦天监',
@@ -211,11 +211,11 @@ def cmd_create(task_id, title, state, org, official, remark=None):
 
 # ── 状态流转合法性校验 ──
 # 只允许文档定义的状态路径:
-# Pending→Taizi→Zhongshu→Menxia→Assigned→Doing→Review→Done
+# Pending→Sili→Zhongshu→Menxia→Assigned→Doing→Review→Done
 # 额外: Blocked 可双向切换, Cancelled 从任意非终态可达, Next→Doing
 _VALID_TRANSITIONS = {
-    'Pending':   {'Taizi', 'Cancelled'},
-    'Taizi':     {'Zhongshu', 'Cancelled'},
+    'Pending':   {'Sili', 'Cancelled'},
+    'Sili':     {'Zhongshu', 'Cancelled'},
     'Zhongshu':  {'Menxia', 'Cancelled'},
     'Menxia':    {'Assigned', 'Zhongshu', 'Cancelled'},   # 封驳可回中书
     'Assigned':  {'Doing', 'Next', 'Blocked', 'Cancelled'},

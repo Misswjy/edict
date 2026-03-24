@@ -75,7 +75,7 @@ body {
 
 /* state colors */
 .st-Inbox { border-color: #3a4a7a44; color: #7a9aff; background: #0a1028; }
-.st-Taizi { border-color: #e8a04044; color: #e8a040; background: #281a08; }
+.st-Sili { border-color: #e8a04044; color: #e8a040; background: #281a08; }
 .st-Zhongshu { border-color: #a07aff44; color: #a07aff; background: #110a28; }
 .st-Menxia { border-color: #ff9a6a44; color: #ff9a6a; background: #280f0a; }
 .st-Assigned, .st-Doing { border-color: #6a9eff44; color: #6a9eff; background: #0a1428; }

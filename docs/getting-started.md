@@ -42,14 +42,14 @@ chmod +x install.sh && ./install.sh
 
 ## 第三步：配置消息渠道
 
-在 OpenClaw 中配置消息渠道（Feishu / Telegram / Signal），将 `taizi`（太子）Agent 设为旨意入口。太子会自动分拣闲聊与指令，指令类消息提炼标题后转发中书省。
+在 OpenClaw 中配置消息渠道（Feishu / Telegram / Signal），将 `sili`（司礼监）Agent 设为旨意入口。司礼监会自动甄别闲聊与指令，指令类消息提炼标题后转发中书省。
 
 ```bash
 # 查看当前渠道
 openclaw channels list
 
-# 添加飞书渠道（入口设为太子）
-openclaw channels add --type feishu --agent taizi
+# 添加飞书渠道（入口设为司礼监）
+openclaw channels add --type feishu --agent sili
 ```
 
 参考 OpenClaw 文档：https://docs.openclaw.ai/channels
@@ -73,7 +73,7 @@ open http://127.0.0.1:7891
 
 ## 第五步：发送第一道旨意
 
-通过消息渠道发送任务（太子会自动识别并转发到中书省）：
+通过消息渠道发送任务（司礼监会自动识别并转发到中书省）：
 
 ```
 请帮我用 Python 写一个文本分类器：
@@ -93,7 +93,7 @@ open http://127.0.0.1:7891
 
 任务流转路径：
 ```
-收件 → 太子分拣 → 中书规划 → 门下审议 → 已派发 → 执行中 → 已完成
+收件 → 司礼监分办 → 中书规划 → 门下审议 → 已派发 → 执行中 → 已完成
 ```
 
 ---
@@ -140,18 +140,18 @@ python3 dashboard/server.py
 
 ```bash
 # 方法一：为任意 Agent 配置后重新运行 install.sh（推荐）
-openclaw agents add taizi          # 按提示输入 Anthropic API Key
+openclaw agents add sili          # 按提示输入 Anthropic API Key
 cd edict && ./install.sh            # 自动同步到所有 Agent
 
 # 方法二：手动复制 auth 文件
 MAIN_AUTH=$(find ~/.openclaw/agents -name auth-profiles.json | head -1)
-for agent in taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu; do
+for agent in sili zhongshu menxia shangshu hubu libu bingbu xingbu gongbu; do
   mkdir -p ~/.openclaw/agents/$agent/agent
   cp "$MAIN_AUTH" ~/.openclaw/agents/$agent/agent/auth-profiles.json
 done
 
 # 方法三：逐个配置
-openclaw agents add taizi
+openclaw agents add sili
 openclaw agents add zhongshu
 # ... 其他 Agent
 ```

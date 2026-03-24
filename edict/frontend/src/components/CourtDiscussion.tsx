@@ -18,7 +18,7 @@ import { api } from '../api';
 // ── 常量 ──
 
 const OFFICIAL_COLORS: Record<string, string> = {
-  taizi: '#e8a040', zhongshu: '#a07aff', menxia: '#6a9eff', shangshu: '#2ecc8a',
+  sili: '#e8a040', zhongshu: '#a07aff', menxia: '#6a9eff', shangshu: '#2ecc8a',
   libu: '#f5c842', hubu: '#ff9a6a', bingbu: '#ff5270', xingbu: '#cc4444',
   gongbu: '#44aaff', libu_hr: '#9b59b6',
 };
@@ -35,7 +35,7 @@ const COURT_POSITIONS: Record<string, { x: number; y: number }> = {
   libu: { x: 85, y: 20 }, hubu: { x: 85, y: 35 }, bingbu: { x: 85, y: 50 },
   xingbu: { x: 85, y: 65 }, gongbu: { x: 85, y: 80 },
   // 中间
-  taizi: { x: 50, y: 20 }, libu_hr: { x: 50, y: 80 },
+  sili: { x: 50, y: 20 }, libu_hr: { x: 50, y: 80 },
 };
 
 interface CourtMessage {

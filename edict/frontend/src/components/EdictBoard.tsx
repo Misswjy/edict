@@ -4,7 +4,7 @@ import { api, type Task } from '../api';
 // 排序权重
 const STATE_ORDER: Record<string, number> = {
   Doing: 0, Review: 1, Assigned: 2, Menxia: 3, Zhongshu: 4,
-  Taizi: 5, Inbox: 6, Blocked: 7, Next: 8, Done: 9, Cancelled: 10,
+  Sili: 5, Inbox: 6, Blocked: 7, Next: 8, Done: 9, Cancelled: 10,
 };
 
 function MiniPipe({ task }: { task: Task }) {
@@ -185,7 +185,7 @@ export default function EdictBoard() {
   const handleScan = async () => {
     try {
       const r = await api.schedulerScan();
-      if (r.ok) toast(`🧭 太子巡检完成：${r.count || 0} 个动作`);
+      if (r.ok) toast(`🧭 司礼监巡检完成：${r.count || 0} 个动作`);
       else toast(r.error || '巡检失败', 'err');
       loadAll();
     } catch { toast('服务器连接失败', 'err'); }
@@ -211,7 +211,7 @@ export default function EdictBoard() {
         <span className="ab-count">
           活跃 {activeEdicts.length} · 归档 {archivedEdicts.length} · 共 {allEdicts.length}
         </span>
-        <button className="ab-scan" onClick={handleScan}>🧭 太子巡检</button>
+        <button className="ab-scan" onClick={handleScan}>🧭 司礼监巡检</button>
       </div>
 
       {/* Grid */}
@@ -220,7 +220,7 @@ export default function EdictBoard() {
           <div className="empty" style={{ gridColumn: '1/-1' }}>
             暂无旨意<br />
             <small style={{ fontSize: 11, marginTop: 6, display: 'block', color: 'var(--muted)' }}>
-              通过飞书向太子发送任务，太子分拣后转中书省处理
+              通过飞书向司礼监发送任务，司礼监分办后转中书省处理
             </small>
           </div>
         ) : (
