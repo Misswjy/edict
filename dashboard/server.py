@@ -15,9 +15,12 @@ import json, pathlib, subprocess, sys, threading, argparse, datetime, logging, r
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 # 引入文件锁工具，确保与其他脚本并发安全
+backend_dir = str(pathlib.Path(__file__).parent.parent / 'edict' / 'backend')
 scripts_dir = str(pathlib.Path(__file__).parent.parent / 'scripts')
+sys.path.insert(0, backend_dir)
 sys.path.insert(0, scripts_dir)
 from file_lock import atomic_json_read, atomic_json_write, atomic_json_update
 from utils import validate_url, read_json, now_iso
@@ -26,6 +29,32 @@ from court_discuss import (
     get_session as cd_get, conclude_session as cd_conclude,
     list_sessions as cd_list, destroy_session as cd_destroy,
     get_fate_event as cd_fate, OFFICIAL_PROFILES as CD_PROFILES,
+)
+from app.task_contract import (
+    ActorContext,
+    AGENT_ORG_MAP,
+    ORG_AGENT_MAP,
+    STATE_LABELS,
+    TERMINAL_STATES,
+    VALID_TRANSITIONS,
+    authorize_agent_wake,
+    authorize_dispatch,
+    authorize_review,
+    authorize_scheduler,
+    authorize_task_action,
+    authorize_todos,
+    authorize_transition,
+    build_audit_entry,
+    canonicalize_actor,
+    canonicalize_state,
+    ensure_execution_assignment,
+    ensure_task_shape,
+    make_actor_context,
+    next_manual_transition,
+    build_dispatch_key,
+    resolve_dispatch_agent,
+    resolve_execution_org,
+    review_transition,
 )
 
 log = logging.getLogger('server')
@@ -44,6 +73,9 @@ BASE = pathlib.Path(__file__).parent
 DIST = BASE / 'dist'          # React 构建产物 (npm run build)
 DATA = BASE.parent / "data"
 SCRIPTS = BASE.parent / 'scripts'
+TASKS_PATH = DATA / 'tasks_source.json'
+TASK_AUDIT_PATH = DATA / 'task_audit_log.json'
+CONTROL_PLANE_URL = (os.environ.get('EDICT_BACKEND_URL') or '').strip().rstrip('/')
 
 # 静态资源 MIME 类型
 _MIME_TYPES = {
@@ -78,12 +110,22 @@ def cors_headers(h):
 
 
 def load_tasks():
-    return atomic_json_read(DATA / 'tasks_source.json', [])
+    tasks = atomic_json_read(TASKS_PATH, [])
+    if not isinstance(tasks, list):
+        return []
+    for task in tasks:
+        if isinstance(task, dict):
+            ensure_task_shape(task)
+    return tasks
 
 
 def save_tasks(tasks):
-    atomic_json_write(DATA / 'tasks_source.json', tasks)
+    atomic_json_write(TASKS_PATH, tasks)
     # Trigger refresh (异步，不阻塞，避免僵尸进程)
+    _trigger_refresh_async()
+
+
+def _trigger_refresh_async():
     def _refresh():
         try:
             subprocess.run(['python3', str(SCRIPTS / 'refresh_live_data.py')], timeout=30)
@@ -92,33 +134,194 @@ def save_tasks(tasks):
     threading.Thread(target=_refresh, daemon=True).start()
 
 
-def handle_task_action(task_id, action, reason):
-    """Stop/cancel/resume a task from the dashboard."""
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
-        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+def _append_task_audit(entry):
+    def modifier(entries):
+        if not isinstance(entries, list):
+            entries = []
+        entries.append(entry)
+        if len(entries) > 2000:
+            entries = entries[-2000:]
+        return entries
 
-    old_state = task.get('state', '')
+    atomic_json_update(TASK_AUDIT_PATH, modifier, [])
+
+
+def _record_task_audit(task_id, action, actor, allowed, from_state='', to_state='', target_agent='', deny_reason='', payload=None):
+    entry = build_audit_entry(
+        task_id=task_id,
+        action=action,
+        actor=actor,
+        allowed=allowed,
+        from_state=from_state,
+        to_state=to_state,
+        target_agent=target_agent,
+        deny_reason=deny_reason,
+        payload=payload,
+    )
+    _append_task_audit(entry)
+
+
+def _atomic_update_tasks(modifier, trigger_refresh=True):
+    tasks = atomic_json_update(TASKS_PATH, modifier, [])
+    if trigger_refresh:
+        _trigger_refresh_async()
+    return tasks
+
+
+def _with_task(task_id, updater, *, trigger_refresh=True):
+    result = {"payload": None}
+
+    def modifier(tasks):
+        for task in tasks:
+            if isinstance(task, dict) and task.get('id') == task_id:
+                ensure_task_shape(task)
+                result["payload"] = updater(task, tasks)
+                return tasks
+        result["payload"] = None
+        return tasks
+
+    _atomic_update_tasks(modifier, trigger_refresh=trigger_refresh)
+    return result["payload"]
+
+
+def _actor_from_request(headers, body, default_actor='emperor', default_source='dashboard'):
+    actor_id = (
+        body.get('actor')
+        or headers.get('X-Edict-Actor', '')
+        or default_actor
+    )
+    source = (
+        body.get('source')
+        or headers.get('X-Edict-Source', '')
+        or default_source
+    )
+    request_id = (
+        body.get('requestId')
+        or headers.get('X-Request-Id', '')
+        or headers.get('X-Edict-Request-Id', '')
+    )
+    signature = body.get('signature') or headers.get('X-Edict-Signature', '')
+    timestamp = body.get('timestamp') or headers.get('X-Edict-Timestamp', '')
+    return make_actor_context(actor_id, source=source, request_id=request_id, signature=signature, timestamp=timestamp)
+
+
+def _should_proxy_control_plane(path):
+    if not CONTROL_PLANE_URL:
+        return False
+    if path in {
+        '/api/live-status',
+        '/api/create-task',
+        '/api/task-action',
+        '/api/review-action',
+        '/api/advance-state',
+        '/api/archive-task',
+        '/api/task-todos',
+        '/api/scheduler-scan',
+        '/api/scheduler-retry',
+        '/api/scheduler-escalate',
+        '/api/scheduler-rollback',
+    }:
+        return True
+    return path.startswith('/api/task-activity/') or path.startswith('/api/scheduler-state/')
+
+
+def _proxy_control_plane(method, path, body=None):
+    data = None
+    headers = {'Content-Type': 'application/json'}
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode('utf-8')
+    req = Request(f'{CONTROL_PLANE_URL}{path}', data=data, headers=headers, method=method)
+    try:
+        with urlopen(req, timeout=15) as resp:
+            payload = resp.read()
+            data = json.loads(payload or b'{}')
+            if isinstance(data, dict) and 'detail' in data and 'error' not in data:
+                data['error'] = data['detail']
+            return resp.status, data
+    except HTTPError as exc:
+        payload = exc.read()
+        try:
+            data = json.loads(payload or b'{}')
+        except Exception:
+            data = {'ok': False, 'error': f'backend proxy failed: {exc.reason}'}
+        if isinstance(data, dict) and 'detail' in data and 'error' not in data:
+            data['error'] = data['detail']
+        return exc.code, data
+    except URLError as exc:
+        return 502, {'ok': False, 'error': f'backend proxy failed: {exc.reason}'}
+
+
+def _bump_task_version(task):
+    ensure_task_shape(task)
+    task['_stateVersion'] = max(1, int(task.get('_stateVersion') or 1)) + 1
+    return task['_stateVersion']
+
+
+def handle_task_action(task_id, action, reason, actor=None):
+    """Stop/cancel/resume a task from the dashboard."""
+    actor = actor or make_actor_context('emperor', source='dashboard')
+    result = _with_task(task_id, lambda task, _tasks: _handle_task_action_update(task, action, reason, actor))
+    if result is None:
+        _record_task_audit(task_id, f'task.{action}', actor, False, deny_reason='task not found', payload={'reason': reason})
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    if not result['allowed']:
+        return {'ok': False, 'error': result['error']}
+    if result.get('dispatch_state'):
+        dispatch_for_state(task_id, result['task'], result['dispatch_state'], trigger='resume', actor=actor)
+    return {'ok': True, 'message': result['message']}
+
+
+def _handle_task_action_update(task, action, reason, actor):
+    ensure_task_shape(task)
+    allowed, deny_reason = authorize_task_action(actor, task, action)
+    if not allowed:
+        _record_task_audit(task.get('id', ''), f'task.{action}', actor, False, from_state=task.get('state', ''), deny_reason=deny_reason, payload={'reason': reason})
+        return {'allowed': False, 'error': deny_reason}
+
+    old_state = canonicalize_state(task.get('state', ''))
     _ensure_scheduler(task)
     _scheduler_snapshot(task, f'task-action-before-{action}')
 
     if action == 'stop':
+        if old_state in TERMINAL_STATES or old_state == 'Blocked':
+            deny_reason = f'任务当前状态 {old_state} 不支持 stop'
+            _record_task_audit(task.get('id', ''), 'task.stop', actor, False, from_state=old_state, deny_reason=deny_reason, payload={'reason': reason})
+            return {'allowed': False, 'error': deny_reason}
+        task['_prev_state'] = old_state
         task['state'] = 'Blocked'
         task['block'] = reason or '皇上叫停'
-        task['now'] = f'⏸️ 已暂停：{reason}'
+        task['now'] = f'⏸️ 已暂停：{reason or "皇上叫停"}'
     elif action == 'cancel':
+        if old_state in TERMINAL_STATES:
+            deny_reason = f'任务当前状态 {old_state} 不支持 cancel'
+            _record_task_audit(task.get('id', ''), 'task.cancel', actor, False, from_state=old_state, deny_reason=deny_reason, payload={'reason': reason})
+            return {'allowed': False, 'error': deny_reason}
+        task['_prev_state'] = old_state
         task['state'] = 'Cancelled'
+        task['org'] = '皇上'
         task['block'] = reason or '皇上取消'
-        task['now'] = f'🚫 已取消：{reason}'
+        task['now'] = f'🚫 已取消：{reason or "皇上取消"}'
     elif action == 'resume':
-        # Resume to previous active state or Doing
-        task['state'] = task.get('_prev_state', 'Doing')
+        if old_state != 'Blocked':
+            deny_reason = f'任务当前状态 {old_state} 不支持 resume'
+            _record_task_audit(task.get('id', ''), 'task.resume', actor, False, from_state=old_state, deny_reason=deny_reason, payload={'reason': reason})
+            return {'allowed': False, 'error': deny_reason}
+        previous_state = canonicalize_state(task.get('_prev_state') or '')
+        if not previous_state or previous_state in TERMINAL_STATES:
+            deny_reason = 'Blocked 任务没有可恢复的非终态快照'
+            _record_task_audit(task.get('id', ''), 'task.resume', actor, False, from_state=old_state, deny_reason=deny_reason, payload={'reason': reason})
+            return {'allowed': False, 'error': deny_reason}
+        ok, reason_text = ensure_execution_assignment(task, previous_state)
+        if not ok:
+            _record_task_audit(task.get('id', ''), 'task.resume', actor, False, from_state=old_state, to_state=previous_state, deny_reason=reason_text, payload={'reason': reason})
+            return {'allowed': False, 'error': reason_text}
+        task['state'] = previous_state
         task['block'] = '无'
-        task['now'] = f'▶️ 已恢复执行'
-
-    if action in ('stop', 'cancel'):
-        task['_prev_state'] = old_state  # Save for resume
+        task['now'] = '▶️ 已恢复执行'
+    else:
+        deny_reason = f'未知任务动作: {action}'
+        _record_task_audit(task.get('id', ''), f'task.{action}', actor, False, from_state=old_state, deny_reason=deny_reason)
+        return {'allowed': False, 'error': deny_reason}
 
     task.setdefault('flow_log', []).append({
         'at': now_iso(),
@@ -132,52 +335,91 @@ def handle_task_action(task_id, action, reason):
     else:
         _scheduler_add_flow(task, f'皇上{action}：{reason or "无"}')
 
+    _bump_task_version(task)
     task['updatedAt'] = now_iso()
-
-    save_tasks(tasks)
-    if action == 'resume' and task.get('state') not in _TERMINAL_STATES:
-        dispatch_for_state(task_id, task, task.get('state'), trigger='resume')
     label = {'stop': '已叫停', 'cancel': '已取消', 'resume': '已恢复'}[action]
-    return {'ok': True, 'message': f'{task_id} {label}'}
+    _record_task_audit(
+        task.get('id', ''),
+        f'task.{action}',
+        actor,
+        True,
+        from_state=old_state,
+        to_state=task.get('state', ''),
+        payload={'reason': reason},
+    )
+    return {
+        'allowed': True,
+        'message': f'{task.get("id", "")} {label}',
+        'dispatch_state': task.get('state') if action == 'resume' else '',
+        'task': json.loads(json.dumps(task, ensure_ascii=False)),
+    }
 
 
-def handle_archive_task(task_id, archived, archive_all_done=False):
+def handle_archive_task(task_id, archived, archive_all_done=False, actor=None):
     """Archive or unarchive a task, or batch-archive all Done/Cancelled tasks."""
-    tasks = load_tasks()
+    actor = actor or make_actor_context('emperor', source='dashboard')
     if archive_all_done:
-        count = 0
-        for t in tasks:
-            if t.get('state') in ('Done', 'Cancelled') and not t.get('archived'):
-                t['archived'] = True
-                t['archivedAt'] = now_iso()
-                count += 1
-        save_tasks(tasks)
-        return {'ok': True, 'message': f'{count} 道旨意已归档', 'count': count}
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
+        count_box = {'count': 0}
+
+        def modifier(tasks):
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                ensure_task_shape(task)
+                if task.get('state') in ('Done', 'Cancelled') and not task.get('archived'):
+                    task['archived'] = True
+                    task['archivedAt'] = now_iso()
+                    task['updatedAt'] = now_iso()
+                    count_box['count'] += 1
+            return tasks
+
+        _atomic_update_tasks(modifier)
+        _record_task_audit('', 'task.archive_all_done', actor, True, payload={'count': count_box['count']})
+        return {'ok': True, 'message': f'{count_box["count"]} 道旨意已归档', 'count': count_box['count']}
+    if canonicalize_actor(actor.actor_id) not in {'emperor', 'system'}:
+        deny_reason = f"actor {actor.actor_id} 无权执行归档"
+        _record_task_audit(task_id, 'task.archive', actor, False, deny_reason=deny_reason, payload={'archived': archived})
+        return {'ok': False, 'error': deny_reason}
+    result = _with_task(task_id, lambda task, _tasks: _handle_archive_task_update(task, archived, actor))
+    if result is None:
+        _record_task_audit(task_id, 'task.archive', actor, False, deny_reason='task not found', payload={'archived': archived})
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    task['archived'] = archived
+    return result
+
+
+def _handle_archive_task_update(task, archived, actor):
+    ensure_task_shape(task)
+    task['archived'] = bool(archived)
     if archived:
         task['archivedAt'] = now_iso()
     else:
         task.pop('archivedAt', None)
     task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _record_task_audit(task.get('id', ''), 'task.archive', actor, True, from_state=task.get('state', ''), payload={'archived': archived})
     label = '已归档' if archived else '已取消归档'
-    return {'ok': True, 'message': f'{task_id} {label}'}
+    return {'ok': True, 'message': f'{task.get("id", "")} {label}'}
 
 
-def update_task_todos(task_id, todos):
+def update_task_todos(task_id, todos, actor=None):
     """Update the todos list for a task."""
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
+    actor = actor or make_actor_context('emperor', source='dashboard')
+    result = _with_task(task_id, lambda task, _tasks: _update_task_todos_update(task, todos, actor))
+    if result is None:
+        _record_task_audit(task_id, 'task.todos', actor, False, deny_reason='task not found', payload={'todos': todos})
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    return result
 
+
+def _update_task_todos_update(task, todos, actor):
+    ensure_task_shape(task)
+    allowed, deny_reason = authorize_todos(actor, task)
+    if not allowed:
+        _record_task_audit(task.get('id', ''), 'task.todos', actor, False, from_state=task.get('state', ''), deny_reason=deny_reason, payload={'todos': todos})
+        return {'ok': False, 'error': deny_reason}
     task['todos'] = todos
     task['updatedAt'] = now_iso()
-    save_tasks(tasks)
-    return {'ok': True, 'message': f'{task_id} todos 已更新'}
+    _record_task_audit(task.get('id', ''), 'task.todos', actor, True, from_state=task.get('state', ''), payload={'todo_count': len(todos)})
+    return {'ok': True, 'message': f'{task.get("id", "")} todos 已更新'}
 
 
 def read_skill_content(agent_id, skill_name):
@@ -528,8 +770,9 @@ _JUNK_TITLES = {
 }
 
 
-def handle_create_task(title, org='中书省', official='中书令', priority='normal', template_id='', params=None, target_dept=''):
+def handle_create_task(title, org='中书省', official='中书令', priority='normal', template_id='', params=None, target_dept='', actor=None):
     """从看板创建新任务（圣旨模板下旨）。"""
+    actor = actor or make_actor_context('emperor', source='dashboard')
     if not title or not title.strip():
         return {'ok': False, 'error': '任务标题不能为空'}
     title = title.strip()
@@ -545,107 +788,120 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         return {'ok': False, 'error': f'标题过短（{len(title)}<{_MIN_TITLE_LEN}字），不像是旨意'}
     if title.lower() in _JUNK_TITLES:
         return {'ok': False, 'error': f'「{title}」不是有效旨意，请输入具体工作指令'}
-    # 生成 task id: JJC-YYYYMMDD-NNN
-    today = datetime.datetime.now().strftime('%Y%m%d')
-    tasks = load_tasks()
-    today_ids = [t['id'] for t in tasks if t.get('id', '').startswith(f'JJC-{today}-')]
-    seq = 1
-    if today_ids:
-        nums = [int(tid.split('-')[-1]) for tid in today_ids if tid.split('-')[-1].isdigit()]
-        seq = max(nums) + 1 if nums else 1
-    task_id = f'JJC-{today}-{seq:03d}'
-    # 正确流程起点：皇上 -> 司礼监分办
-    # target_dept 记录模板建议的最终执行部门（仅供尚书省派发参考）
-    initial_org = '司礼监'
-    new_task = {
-        'id': task_id,
-        'title': title,
-        'official': official,
-        'org': initial_org,
-        'state': 'Sili',
-        'now': '等待司礼监接旨分办',
-        'eta': '-',
-        'block': '无',
-        'output': '',
-        'ac': '',
-        'priority': priority,
-        'templateId': template_id,
-        'templateParams': params or {},
-        'flow_log': [{
-            'at': now_iso(),
-            'from': '皇上',
-            'to': initial_org,
-            'remark': f'下旨：{title}'
-        }],
-        'updatedAt': now_iso(),
-    }
-    if target_dept:
-        new_task['targetDept'] = target_dept
+    result_box = {}
 
-    _ensure_scheduler(new_task)
-    _scheduler_snapshot(new_task, 'create-task-initial')
-    _scheduler_mark_progress(new_task, '任务创建')
+    def modifier(tasks):
+        today = datetime.datetime.now().strftime('%Y%m%d')
+        today_ids = [t.get('id', '') for t in tasks if isinstance(t, dict) and t.get('id', '').startswith(f'JJC-{today}-')]
+        seq = 1
+        if today_ids:
+            nums = [int(tid.split('-')[-1]) for tid in today_ids if tid.split('-')[-1].isdigit()]
+            seq = max(nums) + 1 if nums else 1
+        task_id = f'JJC-{today}-{seq:03d}'
+        initial_org = '司礼监'
+        new_task = {
+            'id': task_id,
+            'title': title,
+            'official': official,
+            'org': initial_org,
+            'state': 'Sili',
+            'now': '等待司礼监接旨分办',
+            'eta': '-',
+            'block': '无',
+            'output': '',
+            'ac': '',
+            'priority': priority,
+            'templateId': template_id,
+            'templateParams': params or {},
+            'flow_log': [{
+                'at': now_iso(),
+                'from': '皇上',
+                'to': initial_org,
+                'remark': f'下旨：{title}'
+            }],
+            'updatedAt': now_iso(),
+        }
+        if target_dept:
+            new_task['targetDept'] = target_dept
+        ensure_task_shape(new_task)
+        new_task['_stateVersion'] = max(1, int(new_task.get('_stateVersion') or 1))
+        _ensure_scheduler(new_task)
+        _scheduler_snapshot(new_task, 'create-task-initial')
+        _scheduler_mark_progress(new_task, '任务创建')
+        tasks.insert(0, new_task)
+        result_box['task'] = json.loads(json.dumps(new_task, ensure_ascii=False))
+        result_box['taskId'] = task_id
+        return tasks
 
-    tasks.insert(0, new_task)
-    save_tasks(tasks)
+    _atomic_update_tasks(modifier)
+    task_id = result_box.get('taskId', '')
+    if not task_id:
+        _record_task_audit('', 'task.create', actor, False, deny_reason='create failed', payload={'title': title})
+        return {'ok': False, 'error': '创建任务失败'}
+
+    _record_task_audit(task_id, 'task.create', actor, True, to_state='Sili', payload={'title': title, 'targetDept': target_dept})
     log.info(f'创建任务: {task_id} | {title[:40]}')
-
-    dispatch_for_state(task_id, new_task, 'Sili', trigger='imperial-edict')
-
+    dispatch_for_state(task_id, result_box['task'], 'Sili', trigger='imperial-edict', actor=actor)
     return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给司礼监'}
 
 
-def handle_review_action(task_id, action, comment=''):
+def handle_review_action(task_id, action, comment='', actor=None):
     """门下省御批：准奏/封驳。"""
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
+    actor = actor or make_actor_context('emperor', source='dashboard')
+    result = _with_task(task_id, lambda task, _tasks: _handle_review_action_update(task, action, comment, actor))
+    if result is None:
+        _record_task_audit(task_id, f'review.{action}', actor, False, deny_reason='task not found', payload={'comment': comment})
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    if task.get('state') not in ('Review', 'Menxia'):
-        return {'ok': False, 'error': f'任务 {task_id} 当前状态为 {task.get("state")}，无法御批'}
+    if not result['allowed']:
+        return {'ok': False, 'error': result['error']}
+    if result.get('dispatch_state'):
+        dispatch_for_state(task_id, result['task'], result['dispatch_state'], trigger=f'review-{action}', actor=actor)
+    return {'ok': True, 'message': result['message']}
+
+
+def _handle_review_action_update(task, action, comment, actor):
+    ensure_task_shape(task)
+    allowed, deny_reason = authorize_review(actor, task, action)
+    if not allowed:
+        _record_task_audit(task.get('id', ''), f'review.{action}', actor, False, from_state=task.get('state', ''), deny_reason=deny_reason, payload={'comment': comment})
+        return {'allowed': False, 'error': deny_reason}
 
     _ensure_scheduler(task)
     _scheduler_snapshot(task, f'review-before-{action}')
+    current_state = canonicalize_state(task.get('state', ''))
+    ok, transition = review_transition(task, action, comment)
+    if not ok:
+        _record_task_audit(task.get('id', ''), f'review.{action}', actor, False, from_state=current_state, deny_reason=transition['reason'], payload={'comment': comment})
+        return {'allowed': False, 'error': transition['reason']}
 
-    if action == 'approve':
-        if task['state'] == 'Menxia':
-            task['state'] = 'Assigned'
-            task['now'] = '门下省准奏，移交尚书省派发'
-            remark = f'✅ 准奏：{comment or "门下省审议通过"}'
-            to_dept = '尚书省'
-        else:  # Review
-            task['state'] = 'Done'
-            task['now'] = '御批通过，任务完成'
-            remark = f'✅ 御批准奏：{comment or "审查通过"}'
-            to_dept = '皇上'
-    elif action == 'reject':
-        round_num = (task.get('review_round') or 0) + 1
-        task['review_round'] = round_num
-        task['state'] = 'Zhongshu'
-        task['now'] = f'封驳退回中书省修订（第{round_num}轮）'
-        remark = f'🚫 封驳：{comment or "需要修改"}'
-        to_dept = '中书省'
+    new_state = transition['new_state']
+    task['state'] = new_state
+    task['org'] = transition['to_org']
+    if transition.get('increment_review_round'):
+        next_round = int(task.get('review_round') or 0) + 1
+        task['review_round'] = next_round
+        task['now'] = f'{transition["now"]}（第{next_round}轮）'
     else:
-        return {'ok': False, 'error': f'未知操作: {action}'}
-
+        task['now'] = transition['now']
     task.setdefault('flow_log', []).append({
         'at': now_iso(),
-        'from': '门下省' if task.get('state') != 'Done' else '皇上',
-        'to': to_dept,
-        'remark': remark
+        'from': transition['from_org'],
+        'to': transition['to_org'],
+        'remark': transition['remark'],
     })
-    _scheduler_mark_progress(task, f'审议动作 {action} -> {task.get("state")}')
+    _scheduler_mark_progress(task, f'审议动作 {action} -> {new_state}')
+    _bump_task_version(task)
     task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _record_task_audit(task.get('id', ''), f'review.{action}', actor, True, from_state=current_state, to_state=new_state, payload={'comment': comment})
 
-    # 🚀 审批后自动派发对应 Agent
-    new_state = task['state']
-    if new_state not in ('Done',):
-        dispatch_for_state(task_id, task, new_state)
-
-    label = '已准奏' if action == 'approve' else '已封驳'
-    dispatched = ' (已自动派发 Agent)' if new_state != 'Done' else ''
-    return {'ok': True, 'message': f'{task_id} {label}{dispatched}'}
+    label = '已准奏' if action == 'approve' else '已驳回'
+    dispatched = ' (已自动派发 Agent)' if new_state not in TERMINAL_STATES else ''
+    return {
+        'allowed': True,
+        'message': f'{task.get("id", "")} {label}{dispatched}',
+        'dispatch_state': new_state if new_state not in TERMINAL_STATES else '',
+        'task': json.loads(json.dumps(task, ensure_ascii=False)),
+    }
 
 
 # ══ Agent 在线状态检测 ══
@@ -814,13 +1070,21 @@ def get_agents_status():
     }
 
 
-def wake_agent(agent_id, message=''):
+def wake_agent(agent_id, message='', actor=None, task_id=''):
     """唤醒指定 Agent，发送一条心跳/唤醒消息。"""
+    actor = actor or make_actor_context('emperor', source='dashboard')
     if not _SAFE_NAME_RE.match(agent_id):
+        _record_task_audit(task_id, 'agent.wake', actor, False, target_agent=agent_id, deny_reason=f'agent_id 非法: {agent_id}')
         return {'ok': False, 'error': f'agent_id 非法: {agent_id}'}
+    allowed, deny_reason = authorize_agent_wake(actor, agent_id)
+    if not allowed:
+        _record_task_audit(task_id, 'agent.wake', actor, False, target_agent=agent_id, deny_reason=deny_reason)
+        return {'ok': False, 'error': deny_reason}
     if not _check_agent_workspace(agent_id):
+        _record_task_audit(task_id, 'agent.wake', actor, False, target_agent=agent_id, deny_reason=f'{agent_id} 工作空间不存在，请先配置')
         return {'ok': False, 'error': f'{agent_id} 工作空间不存在，请先配置'}
     if not _check_gateway_alive():
+        _record_task_audit(task_id, 'agent.wake', actor, False, target_agent=agent_id, deny_reason='Gateway 未启动，请先运行 openclaw gateway start')
         return {'ok': False, 'error': 'Gateway 未启动，请先运行 openclaw gateway start'}
 
     # agent_id 直接作为 runtime_id（openclaw agents list 中的注册名）
@@ -848,7 +1112,7 @@ def wake_agent(agent_id, message=''):
         except Exception as e:
             log.warning(f'⚠️ {agent_id} 唤醒异常: {e}')
     threading.Thread(target=do_wake, daemon=True).start()
-
+    _record_task_audit(task_id, 'agent.wake', actor, True, target_agent=agent_id, payload={'message': msg[:200]})
     return {'ok': True, 'message': f'{agent_id} 唤醒指令已发出，约10-30秒后生效'}
 
 
@@ -863,7 +1127,7 @@ _STATE_AGENT_MAP = {
     'Doing': None,         # 六部，需从 org 推断
     'Review': 'shangshu',
     'Next': None,          # 待执行，从 org 推断
-    'Pending': 'zhongshu', # 待处理，默认中书省
+    'Pending': 'sili',
 }
 _ORG_AGENT_MAP = {
     '礼部': 'libu', '户部': 'hubu', '兵部': 'bingbu',
@@ -871,7 +1135,7 @@ _ORG_AGENT_MAP = {
     '中书省': 'zhongshu', '门下省': 'menxia', '尚书省': 'shangshu',
 }
 
-_TERMINAL_STATES = {'Done', 'Cancelled'}
+_TERMINAL_STATES = set(TERMINAL_STATES)
 
 
 def _parse_iso(ts):
@@ -943,14 +1207,18 @@ def _scheduler_mark_progress(task, note=''):
 
 
 def _update_task_scheduler(task_id, updater):
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
-        return False
+    result = _with_task(
+        task_id,
+        lambda task, _tasks: _update_task_scheduler_inner(task, updater),
+    )
+    return result is not None
+
+
+def _update_task_scheduler_inner(task, updater):
+    ensure_task_shape(task)
     sched = _ensure_scheduler(task)
     updater(task, sched)
     task['updatedAt'] = now_iso()
-    save_tasks(tasks)
     return True
 
 
@@ -976,73 +1244,122 @@ def get_scheduler_state(task_id):
     }
 
 
-def handle_scheduler_retry(task_id, reason=''):
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
+def handle_scheduler_retry(task_id, reason='', actor=None):
+    actor = actor or make_actor_context('sili', source='scheduler')
+    allowed, deny_reason = authorize_scheduler(actor, 'retry')
+    if not allowed:
+        _record_task_audit(task_id, 'scheduler.retry', actor, False, deny_reason=deny_reason, payload={'reason': reason})
+        return {'ok': False, 'error': deny_reason}
+    result = _with_task(task_id, lambda task, _tasks: _handle_scheduler_retry_update(task, reason, actor))
+    if result is None:
+        _record_task_audit(task_id, 'scheduler.retry', actor, False, deny_reason='task not found', payload={'reason': reason})
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    state = task.get('state', '')
-    if state in _TERMINAL_STATES or state == 'Blocked':
-        return {'ok': False, 'error': f'任务 {task_id} 当前状态 {state} 不支持重试'}
+    if not result['allowed']:
+        return {'ok': False, 'error': result['error']}
+    dispatch_for_state(task_id, result['task'], result['state'], trigger='sili-retry', actor=actor)
+    return {'ok': True, 'message': result['message'], 'retryCount': result['retryCount']}
 
+
+def _handle_scheduler_retry_update(task, reason, actor):
+    ensure_task_shape(task)
+    state = canonicalize_state(task.get('state', ''))
+    if state in _TERMINAL_STATES or state == 'Blocked':
+        deny_reason = f'任务 {task.get("id", "")} 当前状态 {state} 不支持重试'
+        _record_task_audit(task.get('id', ''), 'scheduler.retry', actor, False, from_state=state, deny_reason=deny_reason, payload={'reason': reason})
+        return {'allowed': False, 'error': deny_reason}
     sched = _ensure_scheduler(task)
     sched['retryCount'] = int(sched.get('retryCount') or 0) + 1
     sched['lastRetryAt'] = now_iso()
     sched['lastDispatchTrigger'] = 'sili-retry'
     _scheduler_add_flow(task, f'触发重试第{sched["retryCount"]}次：{reason or "超时未推进"}')
     task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _record_task_audit(task.get('id', ''), 'scheduler.retry', actor, True, from_state=state, to_state=state, payload={'reason': reason, 'retryCount': sched['retryCount']})
+    return {
+        'allowed': True,
+        'message': f'{task.get("id", "")} 已触发重试派发',
+        'retryCount': sched['retryCount'],
+        'state': state,
+        'task': json.loads(json.dumps(task, ensure_ascii=False)),
+    }
 
-    dispatch_for_state(task_id, task, state, trigger='sili-retry')
-    return {'ok': True, 'message': f'{task_id} 已触发重试派发', 'retryCount': sched['retryCount']}
 
-
-def handle_scheduler_escalate(task_id, reason=''):
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
+def handle_scheduler_escalate(task_id, reason='', actor=None):
+    actor = actor or make_actor_context('sili', source='scheduler')
+    allowed, deny_reason = authorize_scheduler(actor, 'escalate')
+    if not allowed:
+        _record_task_audit(task_id, 'scheduler.escalate', actor, False, deny_reason=deny_reason, payload={'reason': reason})
+        return {'ok': False, 'error': deny_reason}
+    result = _with_task(task_id, lambda task, _tasks: _handle_scheduler_escalate_update(task, reason, actor))
+    if result is None:
+        _record_task_audit(task_id, 'scheduler.escalate', actor, False, deny_reason='task not found', payload={'reason': reason})
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    state = task.get('state', '')
-    if state in _TERMINAL_STATES:
-        return {'ok': False, 'error': f'任务 {task_id} 已结束，无需升级'}
+    if not result['allowed']:
+        return {'ok': False, 'error': result['error']}
+    wake_agent(result['target'], result['messageText'], actor=actor, task_id=task_id)
+    return {'ok': True, 'message': result['message'], 'escalationLevel': result['escalationLevel']}
 
+
+def _handle_scheduler_escalate_update(task, reason, actor):
+    ensure_task_shape(task)
+    state = canonicalize_state(task.get('state', ''))
+    if state in _TERMINAL_STATES:
+        deny_reason = f'任务 {task.get("id", "")} 已结束，无需升级'
+        _record_task_audit(task.get('id', ''), 'scheduler.escalate', actor, False, from_state=state, deny_reason=deny_reason, payload={'reason': reason})
+        return {'allowed': False, 'error': deny_reason}
     sched = _ensure_scheduler(task)
     current_level = int(sched.get('escalationLevel') or 0)
     next_level = min(current_level + 1, 2)
     target = 'menxia' if next_level == 1 else 'shangshu'
     target_label = '门下省' if next_level == 1 else '尚书省'
-
     sched['escalationLevel'] = next_level
     sched['lastEscalatedAt'] = now_iso()
     _scheduler_add_flow(task, f'升级到{target_label}协调：{reason or "任务停滞"}', to=target_label)
     task['updatedAt'] = now_iso()
-    save_tasks(tasks)
-
+    _record_task_audit(task.get('id', ''), 'scheduler.escalate', actor, True, from_state=state, to_state=state, target_agent=target, payload={'reason': reason, 'level': next_level})
     msg = (
         f'🧭 司礼监调度升级通知\n'
-        f'任务ID: {task_id}\n'
+        f'任务ID: {task.get("id", "")}\n'
         f'当前状态: {state}\n'
         f'停滞处理: 请你介入协调推进\n'
         f'原因: {reason or "任务超过阈值未推进"}\n'
         f'⚠️ 看板已有任务，请勿重复创建。'
     )
-    wake_agent(target, msg)
+    return {
+        'allowed': True,
+        'message': f'{task.get("id", "")} 已升级至{target_label}',
+        'escalationLevel': next_level,
+        'target': target,
+        'messageText': msg,
+    }
 
-    return {'ok': True, 'message': f'{task_id} 已升级至{target_label}', 'escalationLevel': next_level}
 
-
-def handle_scheduler_rollback(task_id, reason=''):
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
+def handle_scheduler_rollback(task_id, reason='', actor=None):
+    actor = actor or make_actor_context('sili', source='scheduler')
+    allowed, deny_reason = authorize_scheduler(actor, 'rollback')
+    if not allowed:
+        _record_task_audit(task_id, 'scheduler.rollback', actor, False, deny_reason=deny_reason, payload={'reason': reason})
+        return {'ok': False, 'error': deny_reason}
+    result = _with_task(task_id, lambda task, _tasks: _handle_scheduler_rollback_update(task, reason, actor))
+    if result is None:
+        _record_task_audit(task_id, 'scheduler.rollback', actor, False, deny_reason='task not found', payload={'reason': reason})
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    if not result['allowed']:
+        return {'ok': False, 'error': result['error']}
+    if result.get('dispatch_state'):
+        dispatch_for_state(task_id, result['task'], result['dispatch_state'], trigger='sili-rollback', actor=actor)
+    return {'ok': True, 'message': result['message']}
+
+
+def _handle_scheduler_rollback_update(task, reason, actor):
+    ensure_task_shape(task)
     sched = _ensure_scheduler(task)
     snapshot = sched.get('snapshot') or {}
-    snap_state = snapshot.get('state')
+    snap_state = canonicalize_state(snapshot.get('state'))
     if not snap_state:
-        return {'ok': False, 'error': f'任务 {task_id} 无可用回滚快照'}
-
-    old_state = task.get('state', '')
+        deny_reason = f'任务 {task.get("id", "")} 无可用回滚快照'
+        _record_task_audit(task.get('id', ''), 'scheduler.rollback', actor, False, from_state=task.get('state', ''), deny_reason=deny_reason, payload={'reason': reason})
+        return {'allowed': False, 'error': deny_reason}
+    old_state = canonicalize_state(task.get('state', ''))
     task['state'] = snap_state
     task['org'] = snapshot.get('org', task.get('org', ''))
     task['now'] = f'↩️ 司礼监调度自动回滚：{reason or "恢复到上个稳定节点"}'
@@ -1052,113 +1369,126 @@ def handle_scheduler_rollback(task_id, reason=''):
     sched['stallSince'] = None
     sched['lastProgressAt'] = now_iso()
     _scheduler_add_flow(task, f'执行回滚：{old_state} → {snap_state}，原因：{reason or "停滞恢复"}')
+    _bump_task_version(task)
     task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _record_task_audit(task.get('id', ''), 'scheduler.rollback', actor, True, from_state=old_state, to_state=snap_state, payload={'reason': reason})
+    return {
+        'allowed': True,
+        'message': f'{task.get("id", "")} 已回滚到 {snap_state}',
+        'dispatch_state': snap_state if snap_state not in _TERMINAL_STATES else '',
+        'task': json.loads(json.dumps(task, ensure_ascii=False)),
+    }
 
-    if snap_state not in _TERMINAL_STATES:
-        dispatch_for_state(task_id, task, snap_state, trigger='sili-rollback')
 
-    return {'ok': True, 'message': f'{task_id} 已回滚到 {snap_state}'}
+def handle_scheduler_scan(threshold_sec=600, actor=None):
+    actor = actor or make_actor_context('sili', source='scheduler')
+    allowed, deny_reason = authorize_scheduler(actor, 'scan')
+    if not allowed:
+        _record_task_audit('', 'scheduler.scan', actor, False, deny_reason=deny_reason, payload={'thresholdSec': threshold_sec})
+        return {'ok': False, 'error': deny_reason}
 
-
-def handle_scheduler_scan(threshold_sec=600):
     threshold_sec = max(60, int(threshold_sec or 600))
-    tasks = load_tasks()
     now_dt = datetime.datetime.now(datetime.timezone.utc)
     pending_retries = []
     pending_escalates = []
     pending_rollbacks = []
     actions = []
-    changed = False
 
-    for task in tasks:
-        task_id = task.get('id', '')
-        state = task.get('state', '')
-        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
-            continue
-        if state == 'Blocked':
-            continue
+    def modifier(tasks):
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            ensure_task_shape(task)
+            task_id = task.get('id', '')
+            state = canonicalize_state(task.get('state', ''))
+            if not task_id or state in _TERMINAL_STATES or task.get('archived') or state == 'Blocked':
+                continue
 
-        sched = _ensure_scheduler(task)
-        task_threshold = int(sched.get('stallThresholdSec') or threshold_sec)
-        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
-        if not last_progress:
-            continue
-        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
-        if stalled_sec < task_threshold:
-            continue
+            sched = _ensure_scheduler(task)
+            task_threshold = int(sched.get('stallThresholdSec') or threshold_sec)
+            last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+            if not last_progress:
+                continue
+            stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
+            if stalled_sec < task_threshold:
+                continue
 
-        if not sched.get('stallSince'):
-            sched['stallSince'] = now_iso()
-            changed = True
+            if not sched.get('stallSince'):
+                sched['stallSince'] = now_iso()
 
-        retry_count = int(sched.get('retryCount') or 0)
-        max_retry = max(0, int(sched.get('maxRetry') or 1))
-        level = int(sched.get('escalationLevel') or 0)
+            retry_count = int(sched.get('retryCount') or 0)
+            max_retry = max(0, int(sched.get('maxRetry') or 1))
+            level = int(sched.get('escalationLevel') or 0)
 
-        if retry_count < max_retry:
-            sched['retryCount'] = retry_count + 1
-            sched['lastRetryAt'] = now_iso()
-            sched['lastDispatchTrigger'] = 'sili-scan-retry'
-            _scheduler_add_flow(task, f'停滞{stalled_sec}秒，触发自动重试第{sched["retryCount"]}次')
-            pending_retries.append((task_id, state))
-            actions.append({'taskId': task_id, 'action': 'retry', 'stalledSec': stalled_sec})
-            changed = True
-            continue
+            if retry_count < max_retry:
+                sched['retryCount'] = retry_count + 1
+                sched['lastRetryAt'] = now_iso()
+                sched['lastDispatchTrigger'] = 'sili-scan-retry'
+                _scheduler_add_flow(task, f'停滞{stalled_sec}秒，触发自动重试第{sched["retryCount"]}次')
+                task['updatedAt'] = now_iso()
+                pending_retries.append({'taskId': task_id, 'state': state, 'task': json.loads(json.dumps(task, ensure_ascii=False))})
+                actions.append({'taskId': task_id, 'action': 'retry', 'stalledSec': stalled_sec})
+                _record_task_audit(task_id, 'scheduler.scan.retry', actor, True, from_state=state, to_state=state, payload={'stalledSec': stalled_sec, 'retryCount': sched['retryCount']})
+                continue
 
-        if level < 2:
-            next_level = level + 1
-            target = 'menxia' if next_level == 1 else 'shangshu'
-            target_label = '门下省' if next_level == 1 else '尚书省'
-            sched['escalationLevel'] = next_level
-            sched['lastEscalatedAt'] = now_iso()
-            _scheduler_add_flow(task, f'停滞{stalled_sec}秒，升级至{target_label}协调', to=target_label)
-            pending_escalates.append((task_id, state, target, target_label, stalled_sec))
-            actions.append({'taskId': task_id, 'action': 'escalate', 'to': target_label, 'stalledSec': stalled_sec})
-            changed = True
-            continue
+            if level < 2:
+                next_level = level + 1
+                target = 'menxia' if next_level == 1 else 'shangshu'
+                target_label = '门下省' if next_level == 1 else '尚书省'
+                sched['escalationLevel'] = next_level
+                sched['lastEscalatedAt'] = now_iso()
+                _scheduler_add_flow(task, f'停滞{stalled_sec}秒，升级至{target_label}协调', to=target_label)
+                task['updatedAt'] = now_iso()
+                pending_escalates.append({
+                    'taskId': task_id,
+                    'state': state,
+                    'target': target,
+                    'targetLabel': target_label,
+                    'stalledSec': stalled_sec,
+                })
+                actions.append({'taskId': task_id, 'action': 'escalate', 'to': target_label, 'stalledSec': stalled_sec})
+                _record_task_audit(task_id, 'scheduler.scan.escalate', actor, True, from_state=state, to_state=state, target_agent=target, payload={'stalledSec': stalled_sec, 'level': next_level})
+                continue
 
-        if sched.get('autoRollback', True):
-            snapshot = sched.get('snapshot') or {}
-            snap_state = snapshot.get('state')
-            if snap_state and snap_state != state:
-                old_state = state
-                task['state'] = snap_state
-                task['org'] = snapshot.get('org', task.get('org', ''))
-                task['now'] = '↩️ 司礼监调度自动回滚到稳定节点'
-                task['block'] = '无'
-                sched['retryCount'] = 0
-                sched['escalationLevel'] = 0
-                sched['stallSince'] = None
-                sched['lastProgressAt'] = now_iso()
-                _scheduler_add_flow(task, f'连续停滞，自动回滚：{old_state} → {snap_state}')
-                pending_rollbacks.append((task_id, snap_state))
-                actions.append({'taskId': task_id, 'action': 'rollback', 'toState': snap_state})
-                changed = True
+            if sched.get('autoRollback', True):
+                snapshot = sched.get('snapshot') or {}
+                snap_state = canonicalize_state(snapshot.get('state'))
+                if snap_state and snap_state != state:
+                    task['state'] = snap_state
+                    task['org'] = snapshot.get('org', task.get('org', ''))
+                    task['now'] = '↩️ 司礼监调度自动回滚到稳定节点'
+                    task['block'] = '无'
+                    sched['retryCount'] = 0
+                    sched['escalationLevel'] = 0
+                    sched['stallSince'] = None
+                    sched['lastProgressAt'] = now_iso()
+                    _scheduler_add_flow(task, f'连续停滞，自动回滚：{state} → {snap_state}')
+                    _bump_task_version(task)
+                    task['updatedAt'] = now_iso()
+                    pending_rollbacks.append({'taskId': task_id, 'state': snap_state, 'task': json.loads(json.dumps(task, ensure_ascii=False))})
+                    actions.append({'taskId': task_id, 'action': 'rollback', 'toState': snap_state})
+                    _record_task_audit(task_id, 'scheduler.scan.rollback', actor, True, from_state=state, to_state=snap_state, payload={'stalledSec': stalled_sec})
+        return tasks
 
-    if changed:
-        save_tasks(tasks)
+    _atomic_update_tasks(modifier)
 
-    for task_id, state in pending_retries:
-        retry_task = next((t for t in tasks if t.get('id') == task_id), None)
-        if retry_task:
-            dispatch_for_state(task_id, retry_task, state, trigger='sili-scan-retry')
+    for item in pending_retries:
+        dispatch_for_state(item['taskId'], item['task'], item['state'], trigger='sili-scan-retry', actor=actor)
 
-    for task_id, state, target, target_label, stalled_sec in pending_escalates:
+    for item in pending_escalates:
         msg = (
             f'🧭 司礼监调度升级通知\n'
-            f'任务ID: {task_id}\n'
-            f'当前状态: {state}\n'
-            f'已停滞: {stalled_sec} 秒\n'
+            f'任务ID: {item["taskId"]}\n'
+            f'当前状态: {item["state"]}\n'
+            f'已停滞: {item["stalledSec"]} 秒\n'
             f'请立即介入协调推进\n'
             f'⚠️ 看板已有任务，请勿重复创建。'
         )
-        wake_agent(target, msg)
+        wake_agent(item['target'], msg, actor=actor, task_id=item['taskId'])
 
-    for task_id, state in pending_rollbacks:
-        rollback_task = next((t for t in tasks if t.get('id') == task_id), None)
-        if rollback_task and state not in _TERMINAL_STATES:
-            dispatch_for_state(task_id, rollback_task, state, trigger='sili-auto-rollback')
+    for item in pending_rollbacks:
+        if item['state'] not in _TERMINAL_STATES:
+            dispatch_for_state(item['taskId'], item['task'], item['state'], trigger='sili-auto-rollback', actor=actor)
 
     return {
         'ok': True,
@@ -1193,38 +1523,42 @@ def _startup_recover_queued_dispatches():
 
 def handle_repair_flow_order():
     """修复历史任务中首条流转为“皇上->中书省”的错序问题。"""
-    tasks = load_tasks()
     fixed = 0
     fixed_ids = []
 
-    for task in tasks:
-        task_id = task.get('id', '')
-        if not task_id.startswith('JJC-'):
-            continue
-        flow_log = task.get('flow_log') or []
-        if not flow_log:
-            continue
+    def modifier(tasks):
+        nonlocal fixed, fixed_ids
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            ensure_task_shape(task)
+            task_id = task.get('id', '')
+            if not task_id.startswith('JJC-'):
+                continue
+            flow_log = task.get('flow_log') or []
+            if not flow_log:
+                continue
 
-        first = flow_log[0]
-        if first.get('from') != '皇上' or first.get('to') != '中书省':
-            continue
+            first = flow_log[0]
+            if first.get('from') != '皇上' or first.get('to') != '中书省':
+                continue
 
-        first['to'] = '司礼监'
-        remark = first.get('remark', '')
-        if isinstance(remark, str) and remark.startswith('下旨：'):
-            first['remark'] = remark
+            first['to'] = '司礼监'
+            remark = first.get('remark', '')
+            if isinstance(remark, str) and remark.startswith('下旨：'):
+                first['remark'] = remark
 
-        if task.get('state') == 'Zhongshu' and task.get('org') == '中书省' and len(flow_log) == 1:
-            task['state'] = 'Sili'
-            task['org'] = '司礼监'
-            task['now'] = '等待司礼监接旨分办'
+            if task.get('state') == 'Zhongshu' and task.get('org') == '中书省' and len(flow_log) == 1:
+                task['state'] = 'Sili'
+                task['org'] = '司礼监'
+                task['now'] = '等待司礼监接旨分办'
 
-        task['updatedAt'] = now_iso()
-        fixed += 1
-        fixed_ids.append(task_id)
+            task['updatedAt'] = now_iso()
+            fixed += 1
+            fixed_ids.append(task_id)
+        return tasks
 
-    if fixed:
-        save_tasks(tasks)
+    _atomic_update_tasks(modifier)
 
     return {
         'ok': True,
@@ -1873,20 +2207,28 @@ _STATE_FLOW = {
     'Doing':    ('Review', '六部', '尚书省', '各部完成，进入汇总'),
     'Review':   ('Done', '尚书省', '司礼监', '全流程完成，回奏司礼监转报皇上'),
 }
-_STATE_LABELS = {
-    'Pending': '待处理', 'Sili': '司礼监', 'Zhongshu': '中书省', 'Menxia': '门下省',
-    'Assigned': '尚书省', 'Next': '待执行', 'Doing': '执行中', 'Review': '审查', 'Done': '完成',
-}
+_STATE_LABELS = dict(STATE_LABELS)
 
 
-def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
+def dispatch_for_state(task_id, task, new_state, trigger='state-transition', actor=None):
     """推进/审批后自动派发对应 Agent（后台异步，不阻塞响应）。"""
-    agent_id = _STATE_AGENT_MAP.get(new_state)
-    if agent_id is None and new_state in ('Doing', 'Next'):
-        org = task.get('org', '')
-        agent_id = _ORG_AGENT_MAP.get(org)
+    actor = actor or make_actor_context('system', source='scheduler')
+    ensure_task_shape(task)
+    new_state = canonicalize_state(new_state)
+    agent_id = resolve_dispatch_agent(task, new_state)
     if not agent_id:
         log.info(f'ℹ️ {task_id} 新状态 {new_state} 无对应 Agent，跳过自动派发')
+        return
+    allowed, deny_reason = authorize_dispatch(actor, task, agent_id)
+    if not allowed:
+        _record_task_audit(task_id, 'task.dispatch', actor, False, from_state=task.get('state', ''), to_state=new_state, target_agent=agent_id, deny_reason=deny_reason, payload={'trigger': trigger})
+        log.warning(f'🚫 {task_id} 派发被拒绝: {deny_reason}')
+        return
+    sched = dict((task.get('_scheduler') or {}))
+    version = max(1, int(task.get('_stateVersion') or 1))
+    dispatch_key = build_dispatch_key(task_id, new_state, version, agent_id, manual=False)
+    if sched.get('lastDispatchKey') == dispatch_key and sched.get('lastDispatchStatus') in {'queued', 'success'}:
+        log.info(f'🛑 {task_id} 跳过重复派发 {dispatch_key}')
         return
 
     _update_task_scheduler(task_id, lambda t, s: (
@@ -1895,9 +2237,11 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
             'lastDispatchStatus': 'queued',
             'lastDispatchAgent': agent_id,
             'lastDispatchTrigger': trigger,
+            'lastDispatchKey': dispatch_key,
         }),
         _scheduler_add_flow(t, f'已入队派发：{new_state} → {agent_id}（{trigger}）', to=_STATE_LABELS.get(new_state, new_state))
     ))
+    _record_task_audit(task_id, 'task.dispatch', actor, True, from_state=task.get('state', ''), to_state=new_state, target_agent=agent_id, payload={'trigger': trigger, 'dispatchKey': dispatch_key, 'version': version})
 
     title = task.get('title', '(无标题)')
     target_dept = task.get('targetDept', '')
@@ -1950,6 +2294,7 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
                     'lastDispatchStatus': 'gateway-offline',
                     'lastDispatchAgent': agent_id,
                     'lastDispatchTrigger': trigger,
+                    'lastDispatchKey': dispatch_key,
                 }))
                 return
             # Fix #139: dispatch channel 可配置（默认 feishu，支持 telegram/wecom/signal 等）
@@ -1970,6 +2315,7 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
                             'lastDispatchStatus': 'success',
                             'lastDispatchAgent': agent_id,
                             'lastDispatchTrigger': trigger,
+                            'lastDispatchKey': dispatch_key,
                             'lastDispatchError': '',
                         }),
                         _scheduler_add_flow(t, f'派发成功：{agent_id}（{trigger}）', to=t.get('org', ''))
@@ -1987,6 +2333,7 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
                     'lastDispatchStatus': 'failed',
                     'lastDispatchAgent': agent_id,
                     'lastDispatchTrigger': trigger,
+                    'lastDispatchKey': dispatch_key,
                     'lastDispatchError': err,
                 }),
                 _scheduler_add_flow(t, f'派发失败：{agent_id}（{trigger}）', to=t.get('org', ''))
@@ -1999,6 +2346,7 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
                     'lastDispatchStatus': 'timeout',
                     'lastDispatchAgent': agent_id,
                     'lastDispatchTrigger': trigger,
+                    'lastDispatchKey': dispatch_key,
                     'lastDispatchError': 'timeout',
                 }),
                 _scheduler_add_flow(t, f'派发超时：{agent_id}（{trigger}）', to=t.get('org', ''))
@@ -2011,6 +2359,7 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
                     'lastDispatchStatus': 'error',
                     'lastDispatchAgent': agent_id,
                     'lastDispatchTrigger': trigger,
+                    'lastDispatchKey': dispatch_key,
                     'lastDispatchError': str(e)[:200],
                 }),
                 _scheduler_add_flow(t, f'派发异常：{agent_id}（{trigger}）', to=t.get('org', ''))
@@ -2020,40 +2369,59 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
     log.info(f'🚀 {task_id} 推进后自动派发 → {agent_id}')
 
 
-def handle_advance_state(task_id, comment=''):
+def handle_advance_state(task_id, comment='', actor=None):
     """手动推进任务到下一阶段（解卡用），推进后自动派发对应 Agent。"""
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
+    actor = actor or make_actor_context('emperor', source='dashboard')
+    result = _with_task(task_id, lambda task, _tasks: _handle_advance_state_update(task, comment, actor))
+    if result is None:
+        _record_task_audit(task_id, 'task.advance', actor, False, deny_reason='task not found', payload={'comment': comment})
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    cur = task.get('state', '')
-    if cur not in _STATE_FLOW:
-        return {'ok': False, 'error': f'任务 {task_id} 状态为 {cur}，无法推进'}
-    _ensure_scheduler(task)
-    _scheduler_snapshot(task, f'advance-before-{cur}')
-    next_state, from_dept, to_dept, default_remark = _STATE_FLOW[cur]
-    remark = comment or default_remark
+    if not result['allowed']:
+        return {'ok': False, 'error': result['error']}
+    if result.get('dispatch_state'):
+        dispatch_for_state(task_id, result['task'], result['dispatch_state'], trigger='manual-advance', actor=actor)
+    return {'ok': True, 'message': result['message']}
 
+
+def _handle_advance_state_update(task, comment, actor):
+    ensure_task_shape(task)
+    current_state = canonicalize_state(task.get('state', ''))
+    ok, transition = next_manual_transition(task)
+    if not ok:
+        _record_task_audit(task.get('id', ''), 'task.advance', actor, False, from_state=current_state, deny_reason=transition['reason'], payload={'comment': comment})
+        return {'allowed': False, 'error': transition['reason']}
+    next_state = transition['next_state']
+    allowed, deny_reason = authorize_transition(actor, task, next_state)
+    if not allowed:
+        _record_task_audit(task.get('id', ''), 'task.advance', actor, False, from_state=current_state, to_state=next_state, deny_reason=deny_reason, payload={'comment': comment})
+        return {'allowed': False, 'error': deny_reason}
+
+    _ensure_scheduler(task)
+    _scheduler_snapshot(task, f'advance-before-{current_state}')
+    remark = comment or transition['remark']
     task['state'] = next_state
+    task['org'] = transition['to_org']
     task['now'] = f'⬇️ 手动推进：{remark}'
     task.setdefault('flow_log', []).append({
         'at': now_iso(),
-        'from': from_dept,
-        'to': to_dept,
-        'remark': f'⬇️ 手动推进：{remark}'
+        'from': transition['from_org'],
+        'to': transition['to_org'],
+        'remark': f'⬇️ 手动推进：{remark}',
     })
-    _scheduler_mark_progress(task, f'手动推进 {cur} -> {next_state}')
+    _scheduler_mark_progress(task, f'手动推进 {current_state} -> {next_state}')
+    _bump_task_version(task)
     task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _record_task_audit(task.get('id', ''), 'task.advance', actor, True, from_state=current_state, to_state=next_state, payload={'comment': comment})
 
-    # 🚀 推进后自动派发对应 Agent（Done 状态无需派发）
-    if next_state != 'Done':
-        dispatch_for_state(task_id, task, next_state)
-
-    from_label = _STATE_LABELS.get(cur, cur)
+    from_label = _STATE_LABELS.get(current_state, current_state)
     to_label = _STATE_LABELS.get(next_state, next_state)
-    dispatched = ' (已自动派发 Agent)' if next_state != 'Done' else ''
-    return {'ok': True, 'message': f'{task_id} {from_label} → {to_label}{dispatched}'}
+    dispatched = ' (已自动派发 Agent)' if next_state not in TERMINAL_STATES else ''
+    return {
+        'allowed': True,
+        'message': f'{task.get("id", "")} {from_label} → {to_label}{dispatched}',
+        'dispatch_state': next_state if next_state not in TERMINAL_STATES else '',
+        'task': json.loads(json.dumps(task, ensure_ascii=False)),
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2122,6 +2490,9 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path.rstrip('/')
         if p in ('', '/dashboard', '/dashboard.html'):
             self.send_file(DIST / 'index.html')
+        elif _should_proxy_control_plane(p):
+            status, payload = _proxy_control_plane('GET', p)
+            self.send_json(payload, status)
         elif p == '/healthz':
             checks = {'dataDir': DATA.is_dir(), 'tasksReadable': (DATA / 'tasks_source.json').exists()}
             checks['dataWritable'] = os.access(str(DATA), os.W_OK)
@@ -2221,6 +2592,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': False, 'error': 'invalid JSON'}, 400)
             return
 
+        if _should_proxy_control_plane(p):
+            status, payload = _proxy_control_plane('POST', p, body)
+            self.send_json(payload, status)
+            return
+
         if p == '/api/morning-config':
             # 字段校验
             if not isinstance(body, dict):
@@ -2250,7 +2626,8 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/scheduler-scan':
             threshold_sec = body.get('thresholdSec', 180)
             try:
-                result = handle_scheduler_scan(threshold_sec)
+                actor = _actor_from_request(self.headers, body, default_actor='sili', default_source='scheduler')
+                result = handle_scheduler_scan(threshold_sec, actor=actor)
                 self.send_json(result)
             except Exception as e:
                 self.send_json({'ok': False, 'error': f'scheduler scan failed: {e}'}, 500)
@@ -2269,7 +2646,8 @@ class Handler(BaseHTTPRequestHandler):
             if not task_id:
                 self.send_json({'ok': False, 'error': 'taskId required'}, 400)
                 return
-            self.send_json(handle_scheduler_retry(task_id, reason))
+            actor = _actor_from_request(self.headers, body, default_actor='sili', default_source='scheduler')
+            self.send_json(handle_scheduler_retry(task_id, reason, actor=actor))
             return
 
         if p == '/api/scheduler-escalate':
@@ -2278,7 +2656,8 @@ class Handler(BaseHTTPRequestHandler):
             if not task_id:
                 self.send_json({'ok': False, 'error': 'taskId required'}, 400)
                 return
-            self.send_json(handle_scheduler_escalate(task_id, reason))
+            actor = _actor_from_request(self.headers, body, default_actor='sili', default_source='scheduler')
+            self.send_json(handle_scheduler_escalate(task_id, reason, actor=actor))
             return
 
         if p == '/api/scheduler-rollback':
@@ -2287,7 +2666,8 @@ class Handler(BaseHTTPRequestHandler):
             if not task_id:
                 self.send_json({'ok': False, 'error': 'taskId required'}, 400)
                 return
-            self.send_json(handle_scheduler_rollback(task_id, reason))
+            actor = _actor_from_request(self.headers, body, default_actor='sili', default_source='scheduler')
+            self.send_json(handle_scheduler_rollback(task_id, reason, actor=actor))
             return
 
         if p == '/api/morning-brief/refresh':
@@ -2361,7 +2741,8 @@ class Handler(BaseHTTPRequestHandler):
             if not task_id or action not in ('stop', 'cancel', 'resume'):
                 self.send_json({'ok': False, 'error': 'taskId and action(stop/cancel/resume) required'}, 400)
                 return
-            result = handle_task_action(task_id, action, reason)
+            actor = _actor_from_request(self.headers, body)
+            result = handle_task_action(task_id, action, reason, actor=actor)
             self.send_json(result)
             return
 
@@ -2372,7 +2753,8 @@ class Handler(BaseHTTPRequestHandler):
             if not task_id and not archive_all:
                 self.send_json({'ok': False, 'error': 'taskId or archiveAllDone required'}, 400)
                 return
-            result = handle_archive_task(task_id, archived, archive_all)
+            actor = _actor_from_request(self.headers, body)
+            result = handle_archive_task(task_id, archived, archive_all, actor=actor)
             self.send_json(result)
             return
 
@@ -2393,7 +2775,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if td.get('status', 'not-started') not in valid_statuses:
                     td['status'] = 'not-started'
-            result = update_task_todos(task_id, todos)
+            actor = _actor_from_request(self.headers, body)
+            result = update_task_todos(task_id, todos, actor=actor)
             self.send_json(result)
             return
 
@@ -2408,7 +2791,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'title required'}, 400)
                 return
             target_dept = body.get('targetDept', '').strip()
-            result = handle_create_task(title, org, official, priority, template_id, params, target_dept)
+            actor = _actor_from_request(self.headers, body)
+            result = handle_create_task(title, org, official, priority, template_id, params, target_dept, actor=actor)
             self.send_json(result)
             return
 
@@ -2419,7 +2803,8 @@ class Handler(BaseHTTPRequestHandler):
             if not task_id or action not in ('approve', 'reject'):
                 self.send_json({'ok': False, 'error': 'taskId and action(approve/reject) required'}, 400)
                 return
-            result = handle_review_action(task_id, action, comment)
+            actor = _actor_from_request(self.headers, body)
+            result = handle_review_action(task_id, action, comment, actor=actor)
             self.send_json(result)
             return
 
@@ -2429,7 +2814,8 @@ class Handler(BaseHTTPRequestHandler):
             if not task_id:
                 self.send_json({'ok': False, 'error': 'taskId required'}, 400)
                 return
-            result = handle_advance_state(task_id, comment)
+            actor = _actor_from_request(self.headers, body)
+            result = handle_advance_state(task_id, comment, actor=actor)
             self.send_json(result)
             return
 
@@ -2439,7 +2825,8 @@ class Handler(BaseHTTPRequestHandler):
             if not agent_id:
                 self.send_json({'ok': False, 'error': 'agentId required'}, 400)
                 return
-            result = wake_agent(agent_id, message)
+            actor = _actor_from_request(self.headers, body)
+            result = wake_agent(agent_id, message, actor=actor)
             self.send_json(result)
             return
 

@@ -1,5 +1,5 @@
 """tests for scripts/kanban_update.py"""
-import json, pathlib, sys
+import json, pathlib, sys, threading
 
 # Ensure scripts/ is importable
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / 'scripts'
@@ -17,13 +17,13 @@ def test_create_and_get(tmp_path):
     original = kb.TASKS_FILE
     kb.TASKS_FILE = tasks_file
     try:
-        kb.cmd_create('TEST-001', '测试任务创建和查询功能验证', 'Inbox', '工部', '工部尚书')
+        kb.cmd_create('TEST-001', '测试任务创建和查询功能验证', 'Sili', '司礼监', '中书令')
         tasks = json.loads(tasks_file.read_text())
         assert any(t.get('id') == 'TEST-001' for t in tasks)
         t = next(t for t in tasks if t['id'] == 'TEST-001')
         assert t['title'] == '测试任务创建和查询功能验证'
-        assert t['state'] == 'Inbox'
-        assert t['org'] == '工部'
+        assert t['state'] == 'Sili'
+        assert t['org'] == '司礼监'
     finally:
         kb.TASKS_FILE = original
 
@@ -32,7 +32,7 @@ def test_move_state(tmp_path):
     """kanban move changes task state."""
     tasks_file = tmp_path / 'tasks_source.json'
     tasks_file.write_text(json.dumps([
-        {'id': 'T-1', 'title': 'test', 'state': 'Inbox'}
+        {'id': 'T-1', 'title': 'test', 'state': 'Assigned', 'org': '尚书省', 'targetDept': '工部'}
     ]))
 
     original = kb.TASKS_FILE
@@ -41,6 +41,7 @@ def test_move_state(tmp_path):
         kb.cmd_state('T-1', 'Doing')
         tasks = json.loads(tasks_file.read_text())
         assert tasks[0]['state'] == 'Doing'
+        assert tasks[0]['org'] == '工部'
     finally:
         kb.TASKS_FILE = original
 
@@ -84,7 +85,7 @@ def test_flow_log(tmp_path):
 
 
 def test_done(tmp_path):
-    """cmd_done marks task as Done with output and flow_log entry."""
+    """cmd_done moves execution tasks into Review instead of skipping review."""
     tasks_file = tmp_path / 'tasks_source.json'
     tasks_file.write_text(json.dumps([
         {'id': 'T-4', 'title': 'done test', 'state': 'Doing', 'org': '兵部', 'flow_log': []}
@@ -96,9 +97,30 @@ def test_done(tmp_path):
         kb.cmd_done('T-4', '/tmp/output.md', '功能已全部实现')
         tasks = json.loads(tasks_file.read_text())
         t = tasks[0]
-        assert t['state'] == 'Done'
+        assert t['state'] == 'Review'
+        assert t['org'] == '尚书省'
         assert t['output'] == '/tmp/output.md'
         assert t['now'] == '功能已全部实现'
+        assert any('📦 执行完成' in e.get('remark', '') for e in t['flow_log'])
+    finally:
+        kb.TASKS_FILE = original
+
+
+def test_done_from_review_reaches_done(tmp_path):
+    """Review state can still be closed explicitly."""
+    tasks_file = tmp_path / 'tasks_source.json'
+    tasks_file.write_text(json.dumps([
+        {'id': 'T-4B', 'title': 'review done', 'state': 'Review', 'org': '尚书省', 'flow_log': []}
+    ]))
+
+    original = kb.TASKS_FILE
+    kb.TASKS_FILE = tasks_file
+    try:
+        kb.cmd_done('T-4B', '/tmp/final.md', '已终审通过')
+        tasks = json.loads(tasks_file.read_text())
+        t = tasks[0]
+        assert t['state'] == 'Done'
+        assert t['org'] == '皇上'
         assert any('✅ 完成' in e.get('remark', '') for e in t['flow_log'])
     finally:
         kb.TASKS_FILE = original
@@ -127,6 +149,27 @@ def test_progress(tmp_path):
         assert statuses['待测试'] == 'not-started'
     finally:
         kb.TASKS_FILE = original
+
+
+def test_progress_rejects_wrong_actor(tmp_path, monkeypatch):
+    """Non-owner agent cannot forge progress for another department."""
+    tasks_file = tmp_path / 'tasks_source.json'
+    tasks_file.write_text(json.dumps([
+        {'id': 'T-5B', 'title': 'progress auth', 'state': 'Doing', 'org': '工部'}
+    ]))
+
+    original = kb.TASKS_FILE
+    kb.TASKS_FILE = tasks_file
+    monkeypatch.setenv('OPENCLAW_AGENT_ID', 'zhongshu')
+    try:
+        kb.cmd_progress('T-5B', '伪造工部进展')
+        tasks = json.loads(tasks_file.read_text())
+        t = tasks[0]
+        assert t.get('now', '') != '伪造工部进展'
+        assert t.get('progress_log', []) == []
+    finally:
+        kb.TASKS_FILE = original
+        monkeypatch.delenv('OPENCLAW_AGENT_ID', raising=False)
 
 
 def test_todo(tmp_path):
@@ -166,5 +209,40 @@ def test_progress_log_capped(tmp_path):
         tasks = json.loads(tasks_file.read_text())
         t = tasks[0]
         assert len(t.get('progress_log', [])) == kb.MAX_PROGRESS_LOG
+    finally:
+        kb.TASKS_FILE = original
+
+
+def test_kanban_concurrent_progress_and_todo(tmp_path):
+    """kanban atomic updates keep both progress and todo writes."""
+    tasks_file = tmp_path / 'tasks_source.json'
+    tasks_file.write_text(json.dumps([
+        {'id': 'T-8', 'title': '并发脚本测试', 'state': 'Doing', 'org': '工部'}
+    ]))
+
+    original = kb.TASKS_FILE
+    kb.TASKS_FILE = tasks_file
+    barrier = threading.Barrier(2)
+    try:
+        def progress_worker():
+            barrier.wait()
+            kb.cmd_progress('T-8', '并发进展上报')
+
+        def todo_worker():
+            barrier.wait()
+            kb.cmd_todo('T-8', '1', '并发 todo', 'in-progress')
+
+        t1 = threading.Thread(target=progress_worker)
+        t2 = threading.Thread(target=todo_worker)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        tasks = json.loads(tasks_file.read_text())
+        t = tasks[0]
+        assert t['now'] == '并发进展上报'
+        assert t['todos'][0]['title'] == '并发 todo'
+        assert len(t.get('progress_log', [])) == 1
     finally:
         kb.TASKS_FILE = original

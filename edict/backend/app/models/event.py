@@ -7,7 +7,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Index, String, Text
+from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from ..db import Base
@@ -25,6 +25,9 @@ class Event(Base):
     topic = Column(String(128), nullable=False, index=True, comment="事件主题, e.g. task.created")
     event_type = Column(String(128), nullable=False, comment="事件类型, e.g. state.changed")
     producer = Column(String(128), nullable=False, comment="事件生产者, e.g. orchestrator:v1")
+    dedupe_key = Column(String(255), nullable=True, comment="逻辑幂等键，用于防重发布")
+    stream_entry_id = Column(String(64), nullable=True, comment="Redis Stream entry id")
+    published_at = Column(DateTime(timezone=True), nullable=True, comment="成功写入 Redis 的时间")
 
     # 事件数据
     payload = Column(JSONB, default=dict, comment="事件负载")
@@ -33,6 +36,8 @@ class Event(Base):
     __table_args__ = (
         Index("ix_events_trace_topic", "trace_id", "topic"),
         Index("ix_events_timestamp", "timestamp"),
+        Index("ix_events_dedupe_key", "dedupe_key"),
+        UniqueConstraint("topic", "dedupe_key", name="uq_events_topic_dedupe_key"),
     )
 
     def to_dict(self) -> dict:
@@ -43,6 +48,9 @@ class Event(Base):
             "topic": self.topic,
             "event_type": self.event_type,
             "producer": self.producer,
+            "dedupe_key": self.dedupe_key,
+            "stream_entry_id": self.stream_entry_id,
             "payload": self.payload or {},
             "meta": self.meta or {},
+            "published_at": self.published_at.isoformat() if self.published_at else None,
         }

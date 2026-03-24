@@ -16,14 +16,11 @@ import logging
 import os
 import signal
 import subprocess
-import uuid
-from datetime import datetime, timezone
 
 from ..config import get_settings
 from ..services.event_bus import (
     EventBus,
     TOPIC_TASK_DISPATCH,
-    TOPIC_TASK_STATUS,
     TOPIC_AGENT_THOUGHTS,
     TOPIC_AGENT_HEARTBEAT,
 )
@@ -92,11 +89,25 @@ class DispatchWorker:
         """执行一次 agent 派发。"""
         async with self._semaphore:
             payload = event.get("payload", {})
+            meta = event.get("meta", {})
             task_id = payload.get("task_id", "")
             agent = payload.get("agent", "")
             message = payload.get("message", "")
             trace_id = event.get("trace_id", "")
             state = payload.get("state", "")
+            version = int(payload.get("version") or meta.get("version") or 1)
+            dispatch_key = str(payload.get("dispatch_key") or meta.get("dispatch_key") or "")
+
+            claim_status = ""
+            if dispatch_key:
+                claim_status = await self.bus.claim_dispatch_execution(
+                    dispatch_key,
+                    ttl_sec=max(get_settings().dispatch_timeout_sec * 2, 900),
+                )
+            if claim_status in {"claimed", "completed"}:
+                log.info("🛑 Skip duplicate dispatch %s for task %s", dispatch_key, task_id)
+                await self.bus.ack(TOPIC_TASK_DISPATCH, GROUP, entry_id)
+                return
 
             log.info(f"🔄 Dispatching task {task_id} → agent '{agent}' state={state}")
 
@@ -106,11 +117,14 @@ class DispatchWorker:
                 trace_id=trace_id,
                 event_type="agent.dispatch.start",
                 producer="dispatcher",
-                payload={"task_id": task_id, "agent": agent},
+                payload={"task_id": task_id, "agent": agent, "dispatch_key": dispatch_key, "version": version},
+                meta={"dispatch_key": dispatch_key, "version": version},
+                dedupe_key=f"dispatch-heartbeat:{dispatch_key}:start" if dispatch_key else "",
             )
 
             try:
                 result = await self._call_openclaw(agent, message, task_id, trace_id)
+                return_code = int(result.get("returncode") or -1)
 
                 # 发布 agent 输出
                 await self.bus.publish(
@@ -122,16 +136,29 @@ class DispatchWorker:
                         "task_id": task_id,
                         "agent": agent,
                         "output": result.get("stdout", ""),
-                        "return_code": result.get("returncode", -1),
+                        "return_code": return_code,
+                        "dispatch_key": dispatch_key,
+                        "version": version,
                     },
+                    meta={"dispatch_key": dispatch_key, "version": version},
+                    dedupe_key=f"dispatch-output:{dispatch_key}" if dispatch_key else "",
                 )
+                if dispatch_key:
+                    await self.bus.mark_dispatch_execution_complete(
+                        dispatch_key,
+                        task_id=task_id,
+                        agent=agent,
+                        state=state,
+                        version=version,
+                        return_code=return_code,
+                    )
 
-                if result.get("returncode") == 0:
+                if return_code == 0:
                     log.info(f"✅ Agent '{agent}' completed task {task_id}")
                 else:
                     log.warning(
                         f"⚠️ Agent '{agent}' returned non-zero for task {task_id}: "
-                        f"rc={result.get('returncode')}"
+                        f"rc={return_code}"
                     )
 
                 # ACK — 事件处理完毕

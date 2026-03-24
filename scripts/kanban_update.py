@@ -32,8 +32,11 @@
 import json, pathlib, sys, subprocess, logging, os, re
 
 _BASE = pathlib.Path(__file__).resolve().parent.parent
+_BACKEND = _BASE / 'edict' / 'backend'
+sys.path.insert(0, str(_BACKEND))
 TASKS_FILE = _BASE / 'data' / 'tasks_source.json'
 REFRESH_SCRIPT = _BASE / 'scripts' / 'refresh_live_data.py'
+TASK_AUDIT_FILE = _BASE / 'data' / 'task_audit_log.json'
 
 log = logging.getLogger('kanban')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -41,10 +44,24 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message
 # 文件锁 —— 防止多 Agent 同时读写 tasks_source.json
 from file_lock import atomic_json_read, atomic_json_update  # noqa: E402
 from utils import now_iso  # noqa: E402
+from app.task_contract import (  # noqa: E402
+    TERMINAL_STATES,
+    authorize_progress,
+    authorize_todos,
+    authorize_transition,
+    build_audit_entry,
+    canonicalize_state,
+    ensure_execution_assignment,
+    ensure_task_shape,
+    make_actor_context,
+    resolve_execution_org,
+    resolve_state_owner,
+    validate_transition,
+)
 
 STATE_ORG_MAP = {
     'Sili': '司礼监', 'Zhongshu': '中书省', 'Menxia': '门下省', 'Assigned': '尚书省',
-    'Doing': '执行中', 'Review': '尚书省', 'Done': '完成', 'Blocked': '阻塞',
+    'Review': '尚书省', 'Done': '皇上', 'Blocked': '阻塞', 'Cancelled': '皇上',
 }
 
 _STATE_AGENT_MAP = {
@@ -72,7 +89,13 @@ _AGENT_LABELS = {
 MAX_PROGRESS_LOG = 100  # 单任务最大进展日志条数
 
 def load():
-    return atomic_json_read(TASKS_FILE, [])
+    tasks = atomic_json_read(TASKS_FILE, [])
+    if not isinstance(tasks, list):
+        return []
+    for task in tasks:
+        if isinstance(task, dict):
+            ensure_task_shape(task)
+    return tasks
 
 def _trigger_refresh():
     """异步触发 live_status 刷新，不阻塞调用方。"""
@@ -84,6 +107,33 @@ def _trigger_refresh():
 
 def find_task(tasks, task_id):
     return next((t for t in tasks if t.get('id') == task_id), None)
+
+
+def _append_task_audit(entry):
+    def modifier(entries):
+        if not isinstance(entries, list):
+            entries = []
+        entries.append(entry)
+        if len(entries) > 2000:
+            entries = entries[-2000:]
+        return entries
+
+    atomic_json_update(TASK_AUDIT_FILE, modifier, [])
+
+
+def _record_audit(task_id, action, actor, allowed, from_state='', to_state='', deny_reason='', payload=None):
+    _append_task_audit(
+        build_audit_entry(
+            task_id=task_id,
+            action=action,
+            actor=actor,
+            allowed=allowed,
+            from_state=from_state,
+            to_state=to_state,
+            deny_reason=deny_reason,
+            payload=payload,
+        )
+    )
 
 
 # 旨意标题最低要求
@@ -176,12 +226,15 @@ def _is_valid_task_title(title):
 
 def cmd_create(task_id, title, state, org, official, remark=None):
     """新建任务（收旨时立即调用）"""
+    actor = make_actor_context(_infer_agent_id_from_runtime() or 'system', source='kanban-cli')
+    state = canonicalize_state(state)
     # 清洗标题（剥离元数据）
     title = _sanitize_title(title)
     # 旨意标题校验
     valid, reason = _is_valid_task_title(title)
     if not valid:
         log.warning(f'⚠️ 拒绝创建 {task_id}：{reason}')
+        _record_audit(task_id, 'task.create', actor, False, to_state=state, deny_reason=reason, payload={'title': title})
         print(f'[看板] 拒绝创建：{reason}', flush=True)
         return
     actual_org = STATE_ORG_MAP.get(state, org)
@@ -195,17 +248,20 @@ def cmd_create(task_id, title, state, org, official, remark=None):
             if existing.get('state') not in (None, '', 'Inbox', 'Pending'):
                 log.warning(f'任务 {task_id} 已存在 (state={existing["state"]})，将被覆盖')
         tasks = [t for t in tasks if t.get('id') != task_id]
-        tasks.insert(0, {
+        new_task = {
             "id": task_id, "title": title, "official": official,
             "org": actual_org, "state": state,
             "now": clean_remark[:60] if remark else f"已下旨，等待{actual_org}接旨",
             "eta": "-", "block": "无", "output": "", "ac": "",
             "flow_log": [{"at": now_iso(), "from": "皇上", "to": actual_org, "remark": clean_remark}],
             "updatedAt": now_iso()
-        })
+        }
+        ensure_task_shape(new_task)
+        tasks.insert(0, new_task)
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    _record_audit(task_id, 'task.create', actor, True, to_state=state, payload={'title': title, 'org': actual_org})
     log.info(f'✅ 创建 {task_id} | {title[:30]} | state={state}')
 
 
@@ -230,31 +286,47 @@ _VALID_TRANSITIONS = {
 
 def cmd_state(task_id, new_state, now_text=None):
     """更新任务状态（原子操作，含流转合法性校验）"""
+    actor_box = {'actor': None}
     old_state = [None]
     rejected = [False]
+    deny_reason = ['']
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
             log.error(f'任务 {task_id} 不存在')
             return tasks
-        old_state[0] = t['state']
-        allowed = _VALID_TRANSITIONS.get(old_state[0])
-        if allowed is not None and new_state not in allowed:
-            log.warning(f'⚠️ 非法状态转换 {task_id}: {old_state[0]} → {new_state}（允许: {allowed}）')
+        ensure_task_shape(t)
+        actor = make_actor_context(_infer_agent_id_from_runtime(t) or 'system', source='kanban-cli')
+        actor_box['actor'] = actor
+        old_state[0] = canonicalize_state(t.get('state', ''))
+        target_state = canonicalize_state(new_state)
+        allowed, reason = authorize_transition(actor, t, target_state)
+        if not allowed:
+            log.warning(f'⚠️ 无权状态转换 {task_id}: actor={actor.actor_id} {old_state[0]} → {target_state} ({reason})')
             rejected[0] = True
+            deny_reason[0] = reason
             return tasks
-        t['state'] = new_state
-        if new_state in STATE_ORG_MAP:
-            t['org'] = STATE_ORG_MAP[new_state]
+        valid, reason = validate_transition(t, target_state)
+        if not valid:
+            log.warning(f'⚠️ 非法状态转换 {task_id}: {old_state[0]} → {target_state} ({reason})')
+            rejected[0] = True
+            deny_reason[0] = reason
+            return tasks
+        t['state'] = target_state
+        if target_state in STATE_ORG_MAP:
+            t['org'] = STATE_ORG_MAP[target_state]
         if now_text:
             t['now'] = now_text
         t['updatedAt'] = now_iso()
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    actor = actor_box['actor'] or make_actor_context('system', source='kanban-cli')
     if rejected[0]:
+        _record_audit(task_id, 'task.transition', actor, False, from_state=old_state[0] or '', to_state=canonicalize_state(new_state), deny_reason=deny_reason[0], payload={'now': now_text or ''})
         log.info(f'❌ {task_id} 状态转换被拒: {old_state[0]} → {new_state}')
     else:
+        _record_audit(task_id, 'task.transition', actor, True, from_state=old_state[0] or '', to_state=canonicalize_state(new_state), payload={'now': now_text or ''})
         log.info(f'✅ {task_id} 状态更新: {old_state[0]} → {new_state}')
 
 
@@ -278,31 +350,97 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
 
 def cmd_done(task_id, output_path='', summary=''):
     """标记任务完成（原子操作）"""
+    actor_box = {'actor': None}
+    old_state = ['']
+    rejected = [False]
+    deny_reason = ['']
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
             log.error(f'任务 {task_id} 不存在')
             return tasks
-        t['state'] = 'Done'
+        ensure_task_shape(t)
+        actor = make_actor_context(_infer_agent_id_from_runtime(t) or 'system', source='kanban-cli')
+        actor_box['actor'] = actor
+        old_state[0] = canonicalize_state(t.get('state', ''))
+        old_org = t.get('org', '执行部门')
+        if old_state[0] in TERMINAL_STATES:
+            rejected[0] = True
+            deny_reason[0] = f'终态 {old_state[0]} 不允许重复完成'
+            return tasks
+        if old_state[0] in ('Doing', 'Next'):
+            next_state = 'Review'
+            allowed, reason = authorize_transition(actor, t, next_state)
+            if not allowed:
+                rejected[0] = True
+                deny_reason[0] = reason
+                return tasks
+            valid, reason = validate_transition(t, next_state)
+            if not valid:
+                rejected[0] = True
+                deny_reason[0] = reason
+                return tasks
+            t['state'] = next_state
+            t['org'] = '尚书省'
+            t['now'] = summary or '执行完成，待尚书省审查'
+            flow_remark = f"📦 执行完成：{summary or '已提交审查'}"
+            to_org = '尚书省'
+        else:
+            next_state = 'Done'
+            allowed, reason = authorize_transition(actor, t, next_state)
+            if not allowed:
+                rejected[0] = True
+                deny_reason[0] = reason
+                return tasks
+            valid, reason = validate_transition(t, next_state)
+            if not valid:
+                rejected[0] = True
+                deny_reason[0] = reason
+                return tasks
+            t['state'] = next_state
+            t['org'] = '皇上'
+            t['now'] = summary or '任务已完成'
+            flow_remark = f"✅ 完成：{summary or '任务已完成'}"
+            to_org = '皇上'
         t['output'] = output_path
-        t['now'] = summary or '任务已完成'
         t.setdefault('flow_log', []).append({
-            "at": now_iso(), "from": t.get('org', '执行部门'),
-            "to": "皇上", "remark": f"✅ 完成：{summary or '任务已完成'}"
+            "at": now_iso(), "from": old_org,
+            "to": to_org, "remark": flow_remark
         })
         t['updatedAt'] = now_iso()
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
-    log.info(f'✅ {task_id} 已完成')
+    actor = actor_box['actor'] or make_actor_context('system', source='kanban-cli')
+    if rejected[0]:
+        _record_audit(task_id, 'task.done', actor, False, from_state=old_state[0], deny_reason=deny_reason[0], payload={'summary': summary})
+        log.info(f'❌ {task_id} 完成动作被拒: {deny_reason[0]}')
+    else:
+        _record_audit(task_id, 'task.done', actor, True, from_state=old_state[0], to_state='Review' if old_state[0] in ('Doing', 'Next') else 'Done', payload={'summary': summary})
+        log.info(f'✅ {task_id} 已完成/提审')
 
 
 def cmd_block(task_id, reason):
     """标记阻塞（原子操作）"""
+    actor_box = {'actor': None}
+    denied = ['']
+    old_state = ['']
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
             log.error(f'任务 {task_id} 不存在')
+            return tasks
+        ensure_task_shape(t)
+        actor = make_actor_context(_infer_agent_id_from_runtime(t) or 'system', source='kanban-cli')
+        actor_box['actor'] = actor
+        old_state[0] = canonicalize_state(t.get('state', ''))
+        allowed, reason_text = authorize_transition(actor, t, 'Blocked')
+        if not allowed:
+            denied[0] = reason_text
+            return tasks
+        valid, reason_text = validate_transition(t, 'Blocked')
+        if not valid:
+            denied[0] = reason_text
             return tasks
         t['state'] = 'Blocked'
         t['block'] = reason
@@ -310,6 +448,12 @@ def cmd_block(task_id, reason):
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    actor = actor_box['actor'] or make_actor_context('system', source='kanban-cli')
+    if denied[0]:
+        _record_audit(task_id, 'task.block', actor, False, from_state=old_state[0], to_state='Blocked', deny_reason=denied[0], payload={'reason': reason})
+        log.warning(f'⚠️ {task_id} 阻塞操作被拒: {denied[0]}')
+        return
+    _record_audit(task_id, 'task.block', actor, True, from_state=old_state[0], to_state='Blocked', payload={'reason': reason})
     log.warning(f'⚠️ {task_id} 已阻塞: {reason}')
 
 
@@ -364,10 +508,19 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
 
     done_cnt = [0]
     total_cnt = [0]
+    actor_box = {'actor': None}
+    denied = ['']
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
             log.error(f'任务 {task_id} 不存在')
+            return tasks
+        ensure_task_shape(t)
+        actor = make_actor_context(_infer_agent_id_from_runtime(t) or 'system', source='kanban-cli')
+        actor_box['actor'] = actor
+        allowed, reason = authorize_progress(actor, t)
+        if not allowed:
+            denied[0] = reason
             return tasks
         t['now'] = clean
         if parsed_todos is not None:
@@ -399,6 +552,12 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    actor = actor_box['actor'] or make_actor_context('system', source='kanban-cli')
+    if denied[0]:
+        _record_audit(task_id, 'task.progress', actor, False, deny_reason=denied[0], payload={'text': clean})
+        log.warning(f'⚠️ {task_id} 进展汇报被拒: {denied[0]}')
+        return
+    _record_audit(task_id, 'task.progress', actor, True, payload={'text': clean, 'todoCount': total_cnt[0]})
     res_info = ''
     if tokens or cost or elapsed:
         res_info = f' [res: {tokens}tok/${cost:.4f}/{elapsed}s]'
@@ -414,10 +573,19 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
     if status not in ('not-started', 'in-progress', 'completed'):
         status = 'not-started'
     result_info = [0, 0]
+    actor_box = {'actor': None}
+    denied = ['']
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
             log.error(f'任务 {task_id} 不存在')
+            return tasks
+        ensure_task_shape(t)
+        actor = make_actor_context(_infer_agent_id_from_runtime(t) or 'system', source='kanban-cli')
+        actor_box['actor'] = actor
+        allowed, reason = authorize_todos(actor, t)
+        if not allowed:
+            denied[0] = reason
             return tasks
         if 'todos' not in t:
             t['todos'] = []
@@ -439,6 +607,12 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    actor = actor_box['actor'] or make_actor_context('system', source='kanban-cli')
+    if denied[0]:
+        _record_audit(task_id, 'task.todo', actor, False, deny_reason=denied[0], payload={'todoId': todo_id, 'status': status})
+        log.warning(f'⚠️ {task_id} todo 更新被拒: {denied[0]}')
+        return
+    _record_audit(task_id, 'task.todo', actor, True, payload={'todoId': todo_id, 'status': status})
     log.info(f'✅ {task_id} todo [{result_info[0]}/{result_info[1]}]: {todo_id} → {status}')
 
 _CMD_MIN_ARGS = {

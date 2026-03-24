@@ -15,11 +15,8 @@
 import asyncio
 import logging
 import signal
-from contextlib import asynccontextmanager
 
-from ..config import get_settings
-from ..db import async_session
-from ..models.task import TaskState, STATE_AGENT_MAP, ORG_AGENT_MAP
+from ..task_contract import TaskState, build_dispatch_key, resolve_dispatch_agent
 from ..services.event_bus import (
     EventBus,
     TOPIC_TASK_CREATED,
@@ -28,7 +25,6 @@ from ..services.event_bus import (
     TOPIC_TASK_COMPLETED,
     TOPIC_TASK_STALLED,
 )
-from ..services.task_service import TaskService
 
 log = logging.getLogger("edict.orchestrator")
 
@@ -110,41 +106,41 @@ class OrchestratorWorker:
         event_type = event.get("event_type", "")
         trace_id = event.get("trace_id", "")
         payload = event.get("payload", {})
+        meta = event.get("meta", {})
 
         log.info(f"📨 {topic}/{event_type} trace={trace_id}")
 
         if topic == TOPIC_TASK_CREATED:
-            await self._on_task_created(payload, trace_id)
+            await self._on_task_created(payload, meta, trace_id)
         elif topic == TOPIC_TASK_STATUS:
-            await self._on_task_status(event_type, payload, trace_id)
+            await self._on_task_status(event_type, payload, meta, trace_id)
         elif topic == TOPIC_TASK_COMPLETED:
             await self._on_task_completed(payload, trace_id)
         elif topic == TOPIC_TASK_STALLED:
             await self._on_task_stalled(payload, trace_id)
 
-    async def _on_task_created(self, payload: dict, trace_id: str):
+    async def _on_task_created(self, payload: dict, meta: dict, trace_id: str):
         """任务创建 → 派发给司礼监 agent 起草。"""
-        task_id = payload.get("task_id")
-        state = payload.get("state", "sili")
-        agent = STATE_AGENT_MAP.get(TaskState(state), "sili")
-
-        await self.bus.publish(
-            topic=TOPIC_TASK_DISPATCH,
+        task_id = payload.get("task_id") or payload.get("id")
+        state = payload.get("state", TaskState.Sili.value)
+        agent = resolve_dispatch_agent(payload, state) or "sili"
+        version = int(meta.get("version") or payload.get("_stateVersion") or 1)
+        await self._publish_dispatch(
             trace_id=trace_id,
-            event_type="task.dispatch.request",
-            producer="orchestrator",
-            payload={
-                "task_id": task_id,
-                "agent": agent,
-                "state": state,
-                "message": f"新任务已创建: {payload.get('title', '')}",
-            },
+            task_id=task_id,
+            state=state,
+            version=version,
+            agent=agent,
+            task_payload=payload,
+            message=f"新任务已创建: {payload.get('title', '')}",
+            request_id=str(meta.get("request_id") or ""),
         )
 
-    async def _on_task_status(self, event_type: str, payload: dict, trace_id: str):
+    async def _on_task_status(self, event_type: str, payload: dict, meta: dict, trace_id: str):
         """状态变更 → 自动派发下一个 agent。"""
         task_id = payload.get("task_id")
         new_state_str = payload.get("to", "")
+        task_payload = payload.get("task") or {}
 
         try:
             new_state = TaskState(new_state_str)
@@ -152,27 +148,19 @@ class OrchestratorWorker:
             log.warning(f"Unknown state: {new_state_str}")
             return
 
-        # 如果新状态有对应 agent，自动派发
-        agent = STATE_AGENT_MAP.get(new_state)
-
-        # 如果进入 assigned 状态，需要查找六部对应 agent
-        if new_state == TaskState.Assigned:
-            # 从 payload 获取 assignee_org
-            org = payload.get("assignee_org", "")
-            agent = ORG_AGENT_MAP.get(org, agent)
+        agent = resolve_dispatch_agent(task_payload or payload, new_state.value)
 
         if agent:
-            await self.bus.publish(
-                topic=TOPIC_TASK_DISPATCH,
+            version = int(meta.get("version") or task_payload.get("_stateVersion") or 1)
+            await self._publish_dispatch(
                 trace_id=trace_id,
-                event_type="task.dispatch.request",
-                producer="orchestrator",
-                payload={
-                    "task_id": task_id,
-                    "agent": agent,
-                    "state": new_state_str,
-                    "message": f"任务已流转到 {new_state_str}",
-                },
+                task_id=task_id,
+                state=new_state_str,
+                version=version,
+                agent=agent,
+                task_payload=task_payload or payload,
+                message=f"任务已流转到 {new_state_str}",
+                request_id=str(meta.get("request_id") or ""),
             )
 
     async def _on_task_completed(self, payload: dict, trace_id: str):
@@ -185,6 +173,37 @@ class OrchestratorWorker:
         task_id = payload.get("task_id")
         log.warning(f"⏸️ Task {task_id} stalled! Requesting intervention. trace={trace_id}")
         # TODO: 实现停滞任务的自动恢复策略
+
+    async def _publish_dispatch(
+        self,
+        *,
+        trace_id: str,
+        task_id: str,
+        state: str,
+        version: int,
+        agent: str,
+        task_payload: dict,
+        message: str,
+        request_id: str,
+    ) -> None:
+        dispatch_key = build_dispatch_key(task_id, state, version, agent, manual=False, request_id=request_id)
+        await self.bus.publish(
+            topic=TOPIC_TASK_DISPATCH,
+            trace_id=trace_id,
+            event_type="task.dispatch.request",
+            producer="orchestrator",
+            payload={
+                "task_id": task_id,
+                "agent": agent,
+                "state": state,
+                "message": message,
+                "dispatch_key": dispatch_key,
+                "version": version,
+                "task": task_payload,
+            },
+            meta={"version": version, "dispatch_key": dispatch_key, "request_id": request_id},
+            dedupe_key=dispatch_key,
+        )
 
 
 async def run_orchestrator():

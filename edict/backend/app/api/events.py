@@ -43,9 +43,12 @@ async def list_events(
                 "topic": e.topic,
                 "event_type": e.event_type,
                 "producer": e.producer,
+                "dedupe_key": e.dedupe_key,
+                "stream_entry_id": e.stream_entry_id,
                 "payload": e.payload,
                 "meta": e.meta,
                 "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+                "published_at": e.published_at.isoformat() if e.published_at else None,
             }
             for e in events
         ],

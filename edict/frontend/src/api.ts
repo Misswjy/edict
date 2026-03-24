@@ -1,9 +1,11 @@
 /**
- * API 层 — 对接 dashboard/server.py
- * 生产环境从同源 (port 7891) 请求，开发环境可通过 VITE_API_URL 指定
+ * API 层
+ * - 通用看板数据默认走同源 dashboard/server.py
+ * - 任务控制面优先走 FastAPI，可通过 VITE_EDICT_CONTROL_PLANE_URL 指定
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
+const CONTROL_PLANE_BASE = import.meta.env.VITE_EDICT_CONTROL_PLANE_URL || API_BASE;
 
 // ── 通用请求 ──
 
@@ -22,11 +24,19 @@ async function postJ<T>(url: string, data: unknown): Promise<T> {
   return res.json();
 }
 
+function withActor<T extends object>(data: T, actor = 'emperor', source = 'dashboard'): T & { actor: string; source: string } {
+  return {
+    ...data,
+    actor,
+    source,
+  };
+}
+
 // ── API 接口 ──
 
 export const api = {
   // 核心数据
-  liveStatus: () => fetchJ<LiveStatus>(`${API_BASE}/api/live-status`),
+  liveStatus: () => fetchJ<LiveStatus>(`${CONTROL_PLANE_BASE}/api/live-status`),
   agentConfig: () => fetchJ<AgentConfig>(`${API_BASE}/api/agent-config`),
   modelChangeLog: () => fetchJ<ChangeLogEntry[]>(`${API_BASE}/api/model-change-log`).catch(() => []),
   officialsStats: () => fetchJ<OfficialsData>(`${API_BASE}/api/officials-stats`),
@@ -36,9 +46,9 @@ export const api = {
 
   // 任务实时动态
   taskActivity: (id: string) =>
-    fetchJ<TaskActivityData>(`${API_BASE}/api/task-activity/${encodeURIComponent(id)}`),
+    fetchJ<TaskActivityData>(`${CONTROL_PLANE_BASE}/api/task-activity/${encodeURIComponent(id)}`),
   schedulerState: (id: string) =>
-    fetchJ<SchedulerStateData>(`${API_BASE}/api/scheduler-state/${encodeURIComponent(id)}`),
+    fetchJ<SchedulerStateData>(`${CONTROL_PLANE_BASE}/api/scheduler-state/${encodeURIComponent(id)}`),
 
   // 技能内容
   skillContent: (agentId: string, skillName: string) =>
@@ -52,28 +62,28 @@ export const api = {
   setDispatchChannel: (channel: string) =>
     postJ<ActionResult>(`${API_BASE}/api/set-dispatch-channel`, { channel }),
   agentWake: (agentId: string) =>
-    postJ<ActionResult>(`${API_BASE}/api/agent-wake`, { agentId }),
+    postJ<ActionResult>(`${API_BASE}/api/agent-wake`, withActor({ agentId })),
   taskAction: (taskId: string, action: string, reason: string) =>
-    postJ<ActionResult>(`${API_BASE}/api/task-action`, { taskId, action, reason }),
+    postJ<ActionResult>(`${CONTROL_PLANE_BASE}/api/task-action`, withActor({ taskId, action, reason })),
   reviewAction: (taskId: string, action: string, comment: string) =>
-    postJ<ActionResult>(`${API_BASE}/api/review-action`, { taskId, action, comment }),
+    postJ<ActionResult>(`${CONTROL_PLANE_BASE}/api/review-action`, withActor({ taskId, action, comment })),
   advanceState: (taskId: string, comment: string) =>
-    postJ<ActionResult>(`${API_BASE}/api/advance-state`, { taskId, comment }),
+    postJ<ActionResult>(`${CONTROL_PLANE_BASE}/api/advance-state`, withActor({ taskId, comment })),
   archiveTask: (taskId: string, archived: boolean) =>
-    postJ<ActionResult>(`${API_BASE}/api/archive-task`, { taskId, archived }),
+    postJ<ActionResult>(`${CONTROL_PLANE_BASE}/api/archive-task`, withActor({ taskId, archived })),
   archiveAllDone: () =>
-    postJ<ActionResult & { count?: number }>(`${API_BASE}/api/archive-task`, { archiveAllDone: true }),
+    postJ<ActionResult & { count?: number }>(`${CONTROL_PLANE_BASE}/api/archive-task`, withActor({ archiveAllDone: true })),
   schedulerScan: (thresholdSec = 180) =>
     postJ<ActionResult & { count?: number; actions?: ScanAction[]; checkedAt?: string }>(
-      `${API_BASE}/api/scheduler-scan`,
-      { thresholdSec }
+      `${CONTROL_PLANE_BASE}/api/scheduler-scan`,
+      withActor({ thresholdSec }, 'sili', 'scheduler')
     ),
   schedulerRetry: (taskId: string, reason: string) =>
-    postJ<ActionResult>(`${API_BASE}/api/scheduler-retry`, { taskId, reason }),
+    postJ<ActionResult>(`${CONTROL_PLANE_BASE}/api/scheduler-retry`, withActor({ taskId, reason }, 'sili', 'scheduler')),
   schedulerEscalate: (taskId: string, reason: string) =>
-    postJ<ActionResult>(`${API_BASE}/api/scheduler-escalate`, { taskId, reason }),
+    postJ<ActionResult>(`${CONTROL_PLANE_BASE}/api/scheduler-escalate`, withActor({ taskId, reason }, 'sili', 'scheduler')),
   schedulerRollback: (taskId: string, reason: string) =>
-    postJ<ActionResult>(`${API_BASE}/api/scheduler-rollback`, { taskId, reason }),
+    postJ<ActionResult>(`${CONTROL_PLANE_BASE}/api/scheduler-rollback`, withActor({ taskId, reason }, 'sili', 'scheduler')),
   refreshMorning: () =>
     postJ<ActionResult>(`${API_BASE}/api/morning-brief/refresh`, {}),
   saveMorningConfig: (config: SubConfig) =>
@@ -94,7 +104,7 @@ export const api = {
     postJ<ActionResult>(`${API_BASE}/api/remove-remote-skill`, { agentId, skillName }),
 
   createTask: (data: CreateTaskPayload) =>
-    postJ<ActionResult & { taskId?: string }>(`${API_BASE}/api/create-task`, data),
+    postJ<ActionResult & { taskId?: string }>(`${CONTROL_PLANE_BASE}/api/create-task`, withActor(data)),
 
   // ── 朝堂议政 ──
   courtDiscussStart: (topic: string, officials: string[], taskId?: string) =>
@@ -124,6 +134,19 @@ export interface FlowEntry {
   remark: string;
 }
 
+export interface ProgressEntry {
+  at: string;
+  agent: string;
+  agentLabel?: string;
+  text: string;
+  todos?: TodoItem[];
+  state?: string;
+  org?: string;
+  tokens?: number;
+  cost?: number;
+  elapsed?: number;
+}
+
 export interface TodoItem {
   id: string | number;
   title: string;
@@ -148,11 +171,17 @@ export interface Task {
   output: string;
   heartbeat: Heartbeat;
   flow_log: FlowEntry[];
+  progress_log?: ProgressEntry[];
   todos: TodoItem[];
   review_round: number;
   archived: boolean;
   archivedAt?: string;
+  createdAt?: string;
   updatedAt?: string;
+  targetDept?: string;
+  templateId?: string;
+  templateParams?: Record<string, unknown>;
+  _scheduler?: Record<string, unknown>;
   sourceMeta?: Record<string, unknown>;
   activity?: ActivityEntry[];
   _prev_state?: string;

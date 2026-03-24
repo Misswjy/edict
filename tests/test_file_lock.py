@@ -1,5 +1,5 @@
 """tests for scripts/file_lock.py"""
-import json, pathlib, tempfile, os, sys
+import json, pathlib, tempfile, os, sys, multiprocessing
 
 # Ensure scripts/ is importable
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'scripts'))
@@ -63,3 +63,27 @@ def test_unicode_roundtrip(tmp_path):
     result = atomic_json_read(p, {})
     assert result['name'] == '户部尚书'
     assert result['emoji'] == '🏛️'
+
+
+def _increment_counter(path_str: str):
+    path = pathlib.Path(path_str)
+
+    def increment(data):
+        data['count'] = int(data.get('count', 0)) + 1
+        return data
+
+    atomic_json_update(path, increment, {})
+
+
+def test_file_lock_multiprocess_atomic_update(tmp_path):
+    p = tmp_path / 'counter_mp.json'
+    atomic_json_write(p, {'count': 0})
+
+    processes = [multiprocessing.Process(target=_increment_counter, args=(str(p),)) for _ in range(4)]
+    for proc in processes:
+        proc.start()
+    for proc in processes:
+        proc.join(timeout=10)
+        assert proc.exitcode == 0
+
+    assert atomic_json_read(p, {})['count'] == 4
