@@ -68,6 +68,7 @@ open http://127.0.0.1:7891
 ```
 
 > 💡 **提示**：`run_loop.sh` 每 15 秒自动同步数据。可用 `&` 后台运行。
+> 🔐 **默认安全值**：legacy 看板与 v2 backend 默认仅面向本机联调；若要远程暴露控制面，请显式配置 `EDICT_ADMIN_API_TOKEN`，并按需设置 `EDICT_ACTIVITY_SENSITIVITY=full` 与允许的 CORS 来源。
 
 > 💡 **看板即开即用**：`server.py` 内嵌 `dashboard/dashboard.html`，无需额外构建。Docker 镜像包含预构建的 React 前端。
 

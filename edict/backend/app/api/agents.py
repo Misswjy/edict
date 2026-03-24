@@ -6,20 +6,19 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from ..generated.institution_schema import AGENT_DIRECTORY
+
 log = logging.getLogger("edict.api.agents")
 router = APIRouter()
 
-# Agent 元信息（对应 agents/ 目录下的 SOUL.md）
 AGENT_META = {
-    "zaochao": {"name": "早朝（朝会主持）", "role": "朝会召集与议程管理", "icon": "🏛️"},
-    "shangshu": {"name": "尚书令", "role": "总协调与任务监督", "icon": "📜"},
-    "zhongshu": {"name": "中书省", "role": "起草诏令与方案规划", "icon": "✍️"},
-    "menxia": {"name": "门下省", "role": "审核与封驳", "icon": "🔍"},
-    "libu": {"name": "吏部", "role": "人事与组织管理", "icon": "👤"},
-    "hubu": {"name": "户部", "role": "财务与资源管理", "icon": "💰"},
-    "gongbu": {"name": "工部", "role": "工程与技术实施", "icon": "🔧"},
-    "xingbu": {"name": "刑部", "role": "规范与质量审查", "icon": "⚖️"},
-    "bingbu": {"name": "兵部", "role": "安全与应急响应", "icon": "🛡️"},
+    agent["id"]: {
+        "name": agent["label"],
+        "role": agent["role"],
+        "icon": agent["emoji"],
+        "rank": agent["rank"],
+    }
+    for agent in AGENT_DIRECTORY
 }
 
 

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .auth import require_control_plane_access
 from ..db import get_db
 from ..task_contract import TaskState, canonicalize_state, make_actor_context
 from ..services.event_bus import get_event_bus
@@ -50,7 +51,7 @@ async def _service(db: AsyncSession) -> TaskService:
     return TaskService(db, bus)
 
 
-@router.post("/by-legacy/{legacy_id}/transition")
+@router.post("/by-legacy/{legacy_id}/transition", dependencies=[Depends(require_control_plane_access)])
 async def legacy_transition(legacy_id: str, body: LegacyTransition, db: AsyncSession = Depends(get_db)):
     svc = await _service(db)
     try:
@@ -63,7 +64,7 @@ async def legacy_transition(legacy_id: str, body: LegacyTransition, db: AsyncSes
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/by-legacy/{legacy_id}/progress")
+@router.post("/by-legacy/{legacy_id}/progress", dependencies=[Depends(require_control_plane_access)])
 async def legacy_progress(legacy_id: str, body: LegacyProgress, db: AsyncSession = Depends(get_db)):
     svc = await _service(db)
     try:
@@ -75,7 +76,7 @@ async def legacy_progress(legacy_id: str, body: LegacyProgress, db: AsyncSession
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@router.put("/by-legacy/{legacy_id}/todos")
+@router.put("/by-legacy/{legacy_id}/todos", dependencies=[Depends(require_control_plane_access)])
 async def legacy_todos(legacy_id: str, body: LegacyTodoUpdate, db: AsyncSession = Depends(get_db)):
     svc = await _service(db)
     try:

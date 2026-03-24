@@ -7,6 +7,28 @@
 const API_BASE = import.meta.env.VITE_API_URL || '';
 const CONTROL_PLANE_BASE = import.meta.env.VITE_EDICT_CONTROL_PLANE_URL || API_BASE;
 
+function resolveControlPlaneOrigin(): string {
+  const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8000';
+  return CONTROL_PLANE_BASE || runtimeOrigin;
+}
+
+function toWebSocketOrigin(origin: string): string {
+  if (origin.startsWith('https://')) return `wss://${origin.slice('https://'.length)}`;
+  if (origin.startsWith('http://')) return `ws://${origin.slice('http://'.length)}`;
+  if (origin.startsWith('wss://') || origin.startsWith('ws://')) return origin;
+  if (origin.startsWith('/')) {
+    const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8000';
+    return toWebSocketOrigin(`${runtimeOrigin}${origin}`);
+  }
+  return toWebSocketOrigin(`http://${origin}`);
+}
+
+export function buildWsUrl(path: string): string {
+  const base = toWebSocketOrigin(resolveControlPlaneOrigin()).replace(/\/$/, '');
+  const suffix = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${suffix}`;
+}
+
 // ── 通用请求 ──
 
 async function fetchJ<T>(url: string): Promise<T> {
@@ -108,7 +130,11 @@ export const api = {
 
   // ── 朝堂议政 ──
   courtDiscussStart: (topic: string, officials: string[], taskId?: string) =>
-    postJ<CourtDiscussResult>(`${API_BASE}/api/court-discuss/start`, { topic, officials, taskId }),
+    postJ<CourtDiscussSessionData>(`${API_BASE}/api/court-discuss/start`, { topic, officials, taskId }),
+  courtDiscussList: () =>
+    fetchJ<{ ok: boolean; sessions: CourtDiscussSessionSummary[] }>(`${API_BASE}/api/court-discuss/list`),
+  courtDiscussSession: (sessionId: string) =>
+    fetchJ<CourtDiscussSessionData>(`${API_BASE}/api/court-discuss/session/${encodeURIComponent(sessionId)}`),
   courtDiscussAdvance: (sessionId: string, userMessage?: string, decree?: string) =>
     postJ<CourtDiscussResult>(`${API_BASE}/api/court-discuss/advance`, { sessionId, userMessage, decree }),
   courtDiscussConclude: (sessionId: string) =>
@@ -444,6 +470,54 @@ export interface RemoteSkillsListResult {
 }
 
 // ── 朝堂议政 ──
+
+export interface CourtDiscussMessage {
+  type: string;
+  content: string;
+  official_id?: string;
+  official_name?: string;
+  emotion?: string;
+  action?: string;
+  timestamp?: number;
+}
+
+export interface CourtDiscussOfficial {
+  id: string;
+  name: string;
+  emoji: string;
+  role: string;
+  personality: string;
+  speaking_style: string;
+}
+
+export interface CourtDiscussSessionData {
+  ok: boolean;
+  session_id?: string;
+  topic?: string;
+  task_id?: string;
+  officials?: CourtDiscussOfficial[];
+  messages?: CourtDiscussMessage[];
+  round?: number;
+  phase?: string;
+  summary?: string;
+  created_at?: number;
+  updated_at?: number;
+  concluded_at?: number;
+  error?: string;
+}
+
+export interface CourtDiscussSessionSummary {
+  session_id: string;
+  topic: string;
+  task_id?: string;
+  round: number;
+  phase: string;
+  official_count: number;
+  message_count: number;
+  summary?: string;
+  created_at?: number;
+  updated_at?: number;
+}
 
 export interface CourtDiscussResult {
   ok: boolean;

@@ -2,6 +2,23 @@ import { useState } from 'react';
 import { useStore, TEMPLATES, TPL_CATS } from '../store';
 import type { Template } from '../store';
 import { api } from '../api';
+import ConfirmDialog from './ConfirmDialog';
+
+type ConfirmState = {
+  key: string;
+  title: string;
+  message: string;
+  okLabel: string;
+  okClass?: string;
+  note?: string;
+  riskHint?: string;
+  permissionHint?: string;
+  reasonLabel?: string;
+  reasonPlaceholder?: string;
+  showReason?: boolean;
+  defaultReason?: string;
+  onConfirm: (reason: string) => Promise<void> | void;
+};
 
 export default function TemplatePanel() {
   const tplCatFilter = useStore((s) => s.tplCatFilter);
@@ -12,6 +29,7 @@ export default function TemplatePanel() {
   const [formTpl, setFormTpl] = useState<Template | null>(null);
   const [formVals, setFormVals] = useState<Record<string, string>>({});
   const [previewCmd, setPreviewCmd] = useState('');
+  const [dialog, setDialog] = useState<ConfirmState | null>(null);
 
   let tpls = TEMPLATES;
   if (tplCatFilter !== '全部') tpls = tpls.filter((t) => t.cat === tplCatFilter);
@@ -39,40 +57,17 @@ export default function TemplatePanel() {
     setPreviewCmd(buildCmd(formTpl));
   };
 
-  const execute = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formTpl) return;
-    const cmd = buildCmd(formTpl);
-    if (!cmd.trim()) {
-      toast('请填写必填参数', 'err');
-      return;
-    }
+  const summarizeCmd = (cmd: string) => `${cmd.substring(0, 200)}${cmd.length > 200 ? '…' : ''}`;
 
-    // Pre-check gateway
+  const submitEdict = async (tpl: Template, params: Record<string, string>, cmd: string) => {
     try {
-      const st = await api.agentsStatus();
-      if (st.ok && st.gateway && !st.gateway.alive) {
-        toast('⚠️ Gateway 未启动，任务将无法派发！', 'err');
-        if (!confirm('Gateway 未启动，继续？')) return;
-      }
-    } catch {
-      /* ignore */
-    }
-
-    if (!confirm(`确认下旨？\n\n${cmd.substring(0, 200)}${cmd.length > 200 ? '…' : ''}`)) return;
-
-    try {
-      const params: Record<string, string> = {};
-      for (const p of formTpl.params) {
-        params[p.key] = formVals[p.key] || p.default || '';
-      }
       const r = await api.createTask({
         title: cmd.substring(0, 120),
         org: '中书省',
-        lane: formTpl.depts.length === 1 ? 'fast' : 'standard',
-        targetDept: formTpl.depts[0] || '',
+        lane: tpl.depts.length === 1 ? 'fast' : 'standard',
+        targetDept: tpl.depts[0] || '',
         priority: 'normal',
-        templateId: formTpl.id,
+        templateId: tpl.id,
         params,
       });
       if (r.ok) {
@@ -84,11 +79,80 @@ export default function TemplatePanel() {
       }
     } catch {
       toast('⚠️ 服务器连接失败', 'err');
+    } finally {
+      setDialog(null);
     }
+  };
+
+  const execute = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formTpl) return;
+    const cmd = buildCmd(formTpl);
+    if (!cmd.trim()) {
+      toast('请填写必填参数', 'err');
+      return;
+    }
+
+    const params: Record<string, string> = {};
+    for (const p of formTpl.params) {
+      params[p.key] = formVals[p.key] || p.default || '';
+    }
+
+    // Pre-check gateway
+    try {
+      const st = await api.agentsStatus();
+      if (st.ok && st.gateway && !st.gateway.alive) {
+        toast('⚠️ Gateway 未启动，任务将无法派发！', 'err');
+        setDialog({
+          key: `gateway-down-${formTpl.id}`,
+          title: 'Gateway 未启动',
+          message: '当前旨意仍可创建，但短时间内可能无法完成自动派发。',
+          okLabel: '仍然下旨',
+          showReason: false,
+          note: `旨意预览：${summarizeCmd(cmd)}`,
+          riskHint: '继续后任务会进入正式流转，直到 Gateway 恢复后才可能被执行链路接单。',
+          permissionHint: '请确认这是可接受的补偿场景，再继续下旨。',
+          onConfirm: () => void submitEdict(formTpl, params, cmd),
+        });
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    setDialog({
+      key: `submit-${formTpl.id}`,
+      title: '确认下旨',
+      message: '旨意将经中书省进入正式流转，并按模板目标部门派发。',
+      okLabel: '确认下旨',
+      showReason: false,
+      note: `旨意预览：${summarizeCmd(cmd)}`,
+      riskHint: '下旨后会创建正式任务记录，并可能触发后续自动派发。',
+      permissionHint: '请确认模板参数、目标部门和预估成本均无误。',
+      onConfirm: () => void submitEdict(formTpl, params, cmd),
+    });
   };
 
   return (
     <div>
+      {dialog && (
+        <ConfirmDialog
+          key={dialog.key}
+          title={dialog.title}
+          message={dialog.message}
+          okLabel={dialog.okLabel}
+          okClass={dialog.okClass}
+          note={dialog.note}
+          riskHint={dialog.riskHint}
+          permissionHint={dialog.permissionHint}
+          reasonLabel={dialog.reasonLabel}
+          reasonPlaceholder={dialog.reasonPlaceholder}
+          showReason={dialog.showReason}
+          defaultReason={dialog.defaultReason}
+          onOk={(reason) => void dialog.onConfirm(reason)}
+          onCancel={() => setDialog(null)}
+        />
+      )}
       {/* Category filter */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
         {TPL_CATS.map((c) => (

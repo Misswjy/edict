@@ -1,0 +1,311 @@
+{
+  "pipeStages": [
+    {"key": "Inbox", "dept": "皇上", "icon": "👑", "action": "下旨"},
+    {"key": "Sili", "dept": "司礼监", "icon": "🧾", "action": "分办"},
+    {"key": "Zhongshu", "dept": "中书省", "icon": "📜", "action": "起草"},
+    {"key": "Menxia", "dept": "门下省", "icon": "🔍", "action": "审议"},
+    {"key": "Assigned", "dept": "尚书省", "icon": "📮", "action": "派发"},
+    {"key": "Doing", "dept": "六部", "icon": "⚙️", "action": "执行"},
+    {"key": "Review", "dept": "尚书省", "icon": "🔎", "action": "汇总"},
+    {"key": "Done", "dept": "回奏", "icon": "✅", "action": "完成"}
+  ],
+  "orgColors": {
+    "司礼监": "#e8a040",
+    "中书省": "#a07aff",
+    "门下省": "#6a9eff",
+    "尚书省": "#6aef9a",
+    "礼部": "#f5c842",
+    "户部": "#ff9a6a",
+    "兵部": "#ff5270",
+    "刑部": "#cc4444",
+    "工部": "#44aaff",
+    "吏部": "#9b59b6",
+    "皇上": "#ffd700",
+    "回奏": "#2ecc8a"
+  },
+  "states": [
+    {
+      "key": "Pending",
+      "aliases": ["Inbox"],
+      "aliasLabels": {"Inbox": "收件"},
+      "contractLabel": "待处理",
+      "uiLabel": "待处理",
+      "pipeIndex": 0,
+      "defaultOrg": "皇上",
+      "ownerAgent": "sili",
+      "dispatchAgent": "",
+      "terminal": false,
+      "execution": false,
+      "centralQueueOwner": ""
+    },
+    {
+      "key": "Sili",
+      "aliases": [],
+      "contractLabel": "司礼监",
+      "uiLabel": "司礼监分办",
+      "pipeIndex": 1,
+      "defaultOrg": "司礼监",
+      "ownerAgent": "sili",
+      "dispatchAgent": "sili",
+      "terminal": false,
+      "execution": false,
+      "centralQueueOwner": ""
+    },
+    {
+      "key": "Zhongshu",
+      "aliases": [],
+      "contractLabel": "中书省",
+      "uiLabel": "中书起草",
+      "pipeIndex": 2,
+      "defaultOrg": "中书省",
+      "ownerAgent": "zhongshu",
+      "dispatchAgent": "zhongshu",
+      "terminal": false,
+      "execution": false,
+      "centralQueueOwner": ""
+    },
+    {
+      "key": "Menxia",
+      "aliases": [],
+      "contractLabel": "门下省",
+      "uiLabel": "门下审议",
+      "pipeIndex": 3,
+      "defaultOrg": "门下省",
+      "ownerAgent": "menxia",
+      "dispatchAgent": "menxia",
+      "terminal": false,
+      "execution": false,
+      "centralQueueOwner": "menxia"
+    },
+    {
+      "key": "Assigned",
+      "aliases": [],
+      "contractLabel": "尚书省",
+      "uiLabel": "已派发",
+      "pipeIndex": 4,
+      "defaultOrg": "尚书省",
+      "ownerAgent": "shangshu",
+      "dispatchAgent": "shangshu",
+      "terminal": false,
+      "execution": false,
+      "centralQueueOwner": "shangshu"
+    },
+    {
+      "key": "Next",
+      "aliases": [],
+      "contractLabel": "待执行",
+      "uiLabel": "待执行",
+      "pipeIndex": 4,
+      "defaultOrg": "",
+      "ownerAgent": "",
+      "dispatchAgent": "",
+      "terminal": false,
+      "execution": true,
+      "centralQueueOwner": ""
+    },
+    {
+      "key": "Doing",
+      "aliases": [],
+      "contractLabel": "执行中",
+      "uiLabel": "执行中",
+      "pipeIndex": 5,
+      "defaultOrg": "",
+      "ownerAgent": "",
+      "dispatchAgent": "",
+      "terminal": false,
+      "execution": true,
+      "centralQueueOwner": ""
+    },
+    {
+      "key": "Review",
+      "aliases": [],
+      "contractLabel": "审查",
+      "uiLabel": "待审查",
+      "pipeIndex": 6,
+      "defaultOrg": "尚书省",
+      "ownerAgent": "shangshu",
+      "dispatchAgent": "shangshu",
+      "terminal": false,
+      "execution": false,
+      "centralQueueOwner": "shangshu"
+    },
+    {
+      "key": "Done",
+      "aliases": [],
+      "contractLabel": "完成",
+      "uiLabel": "已完成",
+      "pipeIndex": 7,
+      "defaultOrg": "皇上",
+      "ownerAgent": "",
+      "dispatchAgent": "",
+      "terminal": true,
+      "execution": false,
+      "centralQueueOwner": ""
+    },
+    {
+      "key": "Blocked",
+      "aliases": [],
+      "contractLabel": "阻塞",
+      "uiLabel": "阻塞",
+      "pipeIndex": 5,
+      "defaultOrg": "阻塞",
+      "ownerAgent": "",
+      "dispatchAgent": "",
+      "terminal": false,
+      "execution": false,
+      "centralQueueOwner": ""
+    },
+    {
+      "key": "Cancelled",
+      "aliases": [],
+      "contractLabel": "已取消",
+      "uiLabel": "已取消",
+      "pipeIndex": 5,
+      "defaultOrg": "皇上",
+      "ownerAgent": "",
+      "dispatchAgent": "",
+      "terminal": true,
+      "execution": false,
+      "centralQueueOwner": ""
+    }
+  ],
+  "transitions": {
+    "Pending": ["Sili", "Cancelled"],
+    "Sili": ["Zhongshu", "Cancelled"],
+    "Zhongshu": ["Menxia", "Blocked", "Cancelled"],
+    "Menxia": ["Assigned", "Zhongshu", "Cancelled"],
+    "Assigned": ["Next", "Doing", "Blocked", "Cancelled"],
+    "Next": ["Doing", "Blocked", "Cancelled"],
+    "Doing": ["Review", "Blocked", "Cancelled"],
+    "Review": ["Done", "Doing", "Cancelled"],
+    "Blocked": ["Pending", "Sili", "Zhongshu", "Menxia", "Assigned", "Next", "Doing", "Review"],
+    "Done": [],
+    "Cancelled": []
+  },
+  "manualAdvanceFlow": {
+    "Pending": {"to": "Sili", "fromOrg": "皇上", "toOrg": "司礼监", "remark": "待处理旨意转交司礼监分办"},
+    "Sili": {"to": "Zhongshu", "fromOrg": "司礼监", "toOrg": "中书省", "remark": "司礼监分办完毕，转中书省起草"},
+    "Zhongshu": {"to": "Menxia", "fromOrg": "中书省", "toOrg": "门下省", "remark": "中书省方案提交门下省审议"},
+    "Menxia": {"to": "Assigned", "fromOrg": "门下省", "toOrg": "尚书省", "remark": "门下省准奏，转尚书省派发"},
+    "Assigned": {"to": "Doing", "fromOrg": "尚书省", "toOrg": "__execution__", "remark": "尚书省开始派发执行"},
+    "Next": {"to": "Doing", "fromOrg": "__execution__", "toOrg": "__execution__", "remark": "待执行任务开始执行"},
+    "Doing": {"to": "Review", "fromOrg": "__execution__", "toOrg": "尚书省", "remark": "执行部门完成，移交尚书省审查汇总"},
+    "Review": {"to": "Done", "fromOrg": "尚书省", "toOrg": "皇上", "remark": "全流程完成，回奏皇上"}
+  },
+  "centralQueueSla": {
+    "standard": {"Menxia": 1800, "Assigned": 1200, "Review": 1200},
+    "fast": {"Menxia": 480, "Assigned": 300, "Review": 480}
+  },
+  "agents": [
+    {
+      "id": "sili",
+      "label": "司礼监",
+      "emoji": "🧾",
+      "role": "掌印秉笔",
+      "rank": "内廷",
+      "executionDept": false,
+      "allowAgents": ["zhongshu"],
+      "consultAgents": []
+    },
+    {
+      "id": "zhongshu",
+      "label": "中书省",
+      "emoji": "📜",
+      "role": "中书令",
+      "rank": "正一品",
+      "executionDept": false,
+      "allowAgents": ["menxia", "shangshu"],
+      "consultAgents": ["menxia", "shangshu"]
+    },
+    {
+      "id": "menxia",
+      "label": "门下省",
+      "emoji": "🔍",
+      "role": "侍中",
+      "rank": "正一品",
+      "executionDept": false,
+      "allowAgents": ["shangshu", "zhongshu"],
+      "consultAgents": ["zhongshu", "shangshu"]
+    },
+    {
+      "id": "shangshu",
+      "label": "尚书省",
+      "emoji": "📮",
+      "role": "尚书令",
+      "rank": "正一品",
+      "executionDept": false,
+      "allowAgents": ["hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"],
+      "consultAgents": ["menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]
+    },
+    {
+      "id": "libu",
+      "label": "礼部",
+      "emoji": "📝",
+      "role": "礼部尚书",
+      "rank": "正二品",
+      "executionDept": true,
+      "allowAgents": ["shangshu"],
+      "consultAgents": ["shangshu"]
+    },
+    {
+      "id": "hubu",
+      "label": "户部",
+      "emoji": "💰",
+      "role": "户部尚书",
+      "rank": "正二品",
+      "executionDept": true,
+      "allowAgents": ["shangshu"],
+      "consultAgents": ["shangshu"]
+    },
+    {
+      "id": "bingbu",
+      "label": "兵部",
+      "emoji": "⚔️",
+      "role": "兵部尚书",
+      "rank": "正二品",
+      "executionDept": true,
+      "allowAgents": ["shangshu"],
+      "consultAgents": ["shangshu"]
+    },
+    {
+      "id": "xingbu",
+      "label": "刑部",
+      "emoji": "⚖️",
+      "role": "刑部尚书",
+      "rank": "正二品",
+      "executionDept": true,
+      "allowAgents": ["shangshu"],
+      "consultAgents": ["shangshu"]
+    },
+    {
+      "id": "gongbu",
+      "label": "工部",
+      "emoji": "🔧",
+      "role": "工部尚书",
+      "rank": "正二品",
+      "executionDept": true,
+      "allowAgents": ["shangshu"],
+      "consultAgents": ["shangshu"]
+    },
+    {
+      "id": "libu_hr",
+      "label": "吏部",
+      "emoji": "👔",
+      "role": "吏部尚书",
+      "rank": "正二品",
+      "executionDept": true,
+      "allowAgents": ["shangshu"],
+      "consultAgents": ["shangshu"]
+    },
+    {
+      "id": "zaochao",
+      "label": "钦天监",
+      "emoji": "📰",
+      "role": "朝报官",
+      "rank": "正三品",
+      "executionDept": false,
+      "allowAgents": [],
+      "consultAgents": []
+    }
+  ]
+}

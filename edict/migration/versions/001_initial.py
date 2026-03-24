@@ -7,18 +7,25 @@ Create Date: 2026-03-24 00:00:00.000000
 
 from __future__ import annotations
 
-import pathlib
-import sys
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-BACKEND_DIR = pathlib.Path(__file__).resolve().parents[2] / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
-
-from app.task_contract import TASK_STATE_VALUES  # noqa: E402
+TASK_STATE_VALUES_SNAPSHOT = (
+    "Pending",
+    "Sili",
+    "Zhongshu",
+    "Menxia",
+    "Assigned",
+    "Next",
+    "Doing",
+    "Review",
+    "Done",
+    "Blocked",
+    "Cancelled",
+)
 
 revision: str = "001_initial"
 down_revision: Union[str, None] = None
@@ -27,7 +34,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    task_state = sa.Enum(*TASK_STATE_VALUES, name="task_state")
+    task_state = sa.Enum(*TASK_STATE_VALUES_SNAPSHOT, name="task_state")
     task_state.create(op.get_bind(), checkfirst=True)
 
     op.create_table(

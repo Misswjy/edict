@@ -5,6 +5,7 @@ from edict.backend.app.task_contract import (
     central_queue_owner,
     make_actor_context,
     queue_sla_seconds,
+    resolve_state_org,
 )
 
 
@@ -28,3 +29,10 @@ def test_queue_sla_uses_fast_lane_thresholds():
     menxia_standard = {"state": "Menxia", "lane": "standard"}
     assert queue_sla_seconds(menxia_fast) < queue_sla_seconds(menxia_standard)
     assert central_queue_owner("Assigned") == "shangshu"
+
+
+def test_resolve_state_org_aligns_non_execution_and_execution_states():
+    task = {"state": "Sili", "org": "司礼监", "targetDept": "工部"}
+    assert resolve_state_org(task, "Zhongshu") == "中书省"
+    assert resolve_state_org(task, "Review") == "尚书省"
+    assert resolve_state_org(task, "Doing") == "工部"

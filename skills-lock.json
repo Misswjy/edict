@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "skills": {
+    "academic-researcher": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "16dd0121beefcbb1dba0652f0a37fd5511380c8be7ae69270222913483b00bbc"
+    },
+    "code-reviewer": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "ac45cbe57cf1e5f2110e6a68238c5681f97007904d65b6858daa080dc69d7abc"
+    },
+    "content-creator": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "8a40efacec188736eb229b9605df4d6a3c9d42e5ec08765e31dd5d2ad2c679cb"
+    },
+    "data-analyst": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "4fd5f18349b1eea7d7026e7d8a5d22b7856477ffb6796de9cdc68e374777a8c2"
+    },
+    "debugger": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "609b0b6d79fe21bcb5eb8a01b38f5571b8ae05be826936a312bc04d9c5400193"
+    },
+    "decision-helper": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "ecc452103f3cf850b4d7c9055fc1fe02449fd124ea61f48bd0a1cf83c8538bc0"
+    },
+    "deep-research": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "2d3df26fe507ef612bfbde09ed1c8691e17769b430c91fddd5743cd37f4c5672"
+    },
+    "editor": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "6956636eab9a2a0f102926ba7ac0cdaffa5fdccb8061a428aec1ae0874b8820b"
+    },
+    "email-drafter": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "8e8a390730cb28f26c61ae0dd1bedc96d80c48be0d8ed107c6ec1a99ab3101e1"
+    },
+    "fact-checker": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "fb8df7db8d769f67f25a425cb03afe8916da96ac739ba5cf65c5f90faa225531"
+    },
+    "fullstack-developer": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "d824d75875b289753740c12ba33c005a40f0d996f12d3424cabf1ef9ad4cd1a3"
+    },
+    "meeting-notes": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "f2e8df4e4b7e4cf752e50d84fab5f33353f0adf212f128d570be4d1142d1bb40"
+    },
+    "project-planner": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "62897927d02705437bb82e3f6d622c29e3b43593d84967da60a014b623353f1f"
+    },
+    "python-expert": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "7ddc44800aef275b3252ffa65369e214ef2a56603842e3f6721363816eb6b45f"
+    },
+    "sprint-planner": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "a3836dd84fe070fb78e777300332c3c9e293718af642518d776eeb66bc8665dd"
+    },
+    "strategy-advisor": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "b89ff6935fb1a7607bae1fba36dfe84963c633750048e3db0a085c4f5c3ca79c"
+    },
+    "technical-writer": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "e1ccd2334efd9b2137844568db30b0a1c6679404b474c216476c59e22ad08c28"
+    },
+    "ux-designer": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "1178ae59d9dd5ca71122674d85bd78d746b3b95f76c58c65cb0fd48dd54bea45"
+    },
+    "visualization-expert": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "cd8f8bc48c6790cb3b25a13e7a7b05dccd6fd5213577ca59d3c232282d1e151a"
+    }
+  }
+}

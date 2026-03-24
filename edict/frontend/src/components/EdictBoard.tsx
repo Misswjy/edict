@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { useStore, isEdict, isArchived, getPipeStatus, stateLabel, deptColor, PIPE } from '../store';
 import { api, type Task } from '../api';
+import ConfirmDialog from './ConfirmDialog';
 
 // 排序权重
 const STATE_ORDER: Record<string, number> = {
@@ -24,10 +26,27 @@ function MiniPipe({ task }: { task: Task }) {
   );
 }
 
+type ConfirmState = {
+  key: string;
+  title: string;
+  message: string;
+  okLabel: string;
+  okClass?: string;
+  note?: string;
+  riskHint?: string;
+  permissionHint?: string;
+  reasonLabel?: string;
+  reasonPlaceholder?: string;
+  showReason?: boolean;
+  defaultReason?: string;
+  onConfirm: (reason: string) => Promise<void> | void;
+};
+
 function EdictCard({ task }: { task: Task }) {
   const setModalTaskId = useStore((s) => s.setModalTaskId);
   const toast = useStore((s) => s.toast);
   const loadAll = useStore((s) => s.loadAll);
+  const [dialog, setDialog] = useState<ConfirmState | null>(null);
 
   const hb = task.heartbeat || { status: 'unknown', label: '⚪' };
   const stCls = 'st-' + (task.state || '');
@@ -44,14 +63,28 @@ function EdictCard({ task }: { task: Task }) {
   const handleAction = async (action: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (action === 'stop' || action === 'cancel') {
-      // Use confirm dialog via store (will implement with ConfirmDialog)
-      const reason = prompt(action === 'stop' ? '请输入叫停原因：' : '请输入取消原因：');
-      if (reason === null) return;
-      try {
-        const r = await api.taskAction(task.id, action, reason);
-        if (r.ok) { toast(r.message || '操作成功'); loadAll(); }
-        else toast(r.error || '操作失败', 'err');
-      } catch { toast('服务器连接失败', 'err'); }
+      setDialog({
+        key: `${task.id}-${action}`,
+        title: action === 'stop' ? `叫停 ${task.id}` : `取消 ${task.id}`,
+        message: action === 'stop' ? '将当前旨意切换为 Blocked，等待恢复后再继续流转。' : '将当前旨意切换为 Cancelled，取消后不会直接 resume。',
+        okLabel: action === 'stop' ? '确认叫停' : '确认取消',
+        okClass: action === 'cancel' ? 'danger' : undefined,
+        reasonLabel: action === 'stop' ? '叫停原因' : '取消原因',
+        reasonPlaceholder: action === 'stop' ? '例如：需求变化、等待圣裁、暂停执行' : '例如：旨意作废、方向调整、并单处理',
+        riskHint: action === 'stop' ? '叫停会中断当前执行节奏。' : '取消是终态动作，后续若需恢复应新建任务或显式重开。',
+        permissionHint: '仅皇上或司礼监可以执行此类控制动作。',
+        onConfirm: async (reason) => {
+          try {
+            const r = await api.taskAction(task.id, action, reason);
+            if (r.ok) { toast(r.message || '操作成功'); loadAll(); }
+            else toast(r.error || '操作失败', 'err');
+          } catch {
+            toast('服务器连接失败', 'err');
+          } finally {
+            setDialog(null);
+          }
+        },
+      });
     } else if (action === 'resume') {
       try {
         const r = await api.taskAction(task.id, 'resume', '恢复执行');
@@ -75,6 +108,24 @@ function EdictCard({ task }: { task: Task }) {
       className={`edict-card${archived ? ' archived' : ''}`}
       onClick={() => setModalTaskId(task.id)}
     >
+      {dialog && (
+        <ConfirmDialog
+          key={dialog.key}
+          title={dialog.title}
+          message={dialog.message}
+          okLabel={dialog.okLabel}
+          okClass={dialog.okClass}
+          note={dialog.note}
+          riskHint={dialog.riskHint}
+          permissionHint={dialog.permissionHint}
+          reasonLabel={dialog.reasonLabel}
+          reasonPlaceholder={dialog.reasonPlaceholder}
+          showReason={dialog.showReason}
+          defaultReason={dialog.defaultReason}
+          onOk={(reason) => void dialog.onConfirm(reason)}
+          onCancel={() => setDialog(null)}
+        />
+      )}
       <MiniPipe task={task} />
       <div className="ec-id">{task.id}</div>
       <div className="ec-title">{task.title || '(无标题)'}</div>
@@ -158,6 +209,7 @@ export default function EdictBoard() {
   const setEdictFilter = useStore((s) => s.setEdictFilter);
   const toast = useStore((s) => s.toast);
   const loadAll = useStore((s) => s.loadAll);
+  const [dialog, setDialog] = useState<ConfirmState | null>(null);
 
   const tasks = liveStatus?.tasks || [];
   const allEdicts = tasks.filter(isEdict);
@@ -174,12 +226,26 @@ export default function EdictBoard() {
   const unArchivedDone = allEdicts.filter((t) => !t.archived && ['Done', 'Cancelled'].includes(t.state));
 
   const handleArchiveAll = async () => {
-    if (!confirm('将所有已完成/已取消的旨意移入归档？')) return;
-    try {
-      const r = await api.archiveAllDone();
-      if (r.ok) { toast(`📦 ${r.count || 0} 道旨意已归档`); loadAll(); }
-      else toast(r.error || '批量归档失败', 'err');
-    } catch { toast('服务器连接失败', 'err'); }
+    setDialog({
+      key: 'archive-all',
+      title: '批量归档已完成旨意',
+      message: '将所有已完成或已取消的旨意统一移入归档列表。',
+      okLabel: '确认归档',
+      showReason: false,
+      riskHint: '归档不会改变任务终态，但会影响默认看板可见性。',
+      permissionHint: '仅高权限 actor 可以执行批量归档。',
+      onConfirm: async () => {
+        try {
+          const r = await api.archiveAllDone();
+          if (r.ok) { toast(`📦 ${r.count || 0} 道旨意已归档`); loadAll(); }
+          else toast(r.error || '批量归档失败', 'err');
+        } catch {
+          toast('服务器连接失败', 'err');
+        } finally {
+          setDialog(null);
+        }
+      },
+    });
   };
 
   const handleScan = async () => {
@@ -193,6 +259,24 @@ export default function EdictBoard() {
 
   return (
     <div>
+      {dialog && (
+        <ConfirmDialog
+          key={dialog.key}
+          title={dialog.title}
+          message={dialog.message}
+          okLabel={dialog.okLabel}
+          okClass={dialog.okClass}
+          note={dialog.note}
+          riskHint={dialog.riskHint}
+          permissionHint={dialog.permissionHint}
+          reasonLabel={dialog.reasonLabel}
+          reasonPlaceholder={dialog.reasonPlaceholder}
+          showReason={dialog.showReason}
+          defaultReason={dialog.defaultReason}
+          onOk={(reason) => void dialog.onConfirm(reason)}
+          onCancel={() => setDialog(null)}
+        />
+      )}
       {/* Archive Bar */}
       <div className="archive-bar">
         <span className="ab-label">筛选:</span>

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import enum
 import hashlib
 import hmac
 import json
@@ -12,162 +11,42 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from .generated.institution_schema import (
+    AGENT_DIRECTORY,
+    AGENT_ORG_MAP,
+    CENTRAL_QUEUE_SLA,
+    CENTRAL_QUEUE_STATES,
+    CONSULTATION_ALLOW_AGENTS as _CONSULTATION_ALLOW_AGENTS,
+    DEFAULT_ALLOW_AGENTS as _DEFAULT_ALLOW_AGENTS,
+    DEPT_COLOR,
+    EXECUTION_STATES as _EXECUTION_STATES,
+    MANUAL_ADVANCE_FLOW,
+    ORG_AGENT_MAP,
+    PIPE_STAGES,
+    STATE_ALIASES,
+    STATE_DEFAULT_ORG,
+    STATE_DISPATCH_AGENT,
+    STATE_LABELS,
+    STATE_OWNER_AGENT,
+    TASK_STATE_VALUES,
+    TERMINAL_STATES as _TERMINAL_STATES,
+    TaskState,
+    UI_STATE_LABELS,
+    VALID_TRANSITIONS as _VALID_TRANSITIONS,
+)
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class TaskState(str, enum.Enum):
-    Pending = "Pending"
-    Sili = "Sili"
-    Zhongshu = "Zhongshu"
-    Menxia = "Menxia"
-    Assigned = "Assigned"
-    Next = "Next"
-    Doing = "Doing"
-    Review = "Review"
-    Done = "Done"
-    Blocked = "Blocked"
-    Cancelled = "Cancelled"
-
-
-STATE_ALIASES = {"Inbox": TaskState.Pending.value}
-TASK_STATE_VALUES = tuple(state.value for state in TaskState)
-TERMINAL_STATES = {TaskState.Done.value, TaskState.Cancelled.value}
-EXECUTION_STATES = {TaskState.Next.value, TaskState.Doing.value}
-TASK_LANE_VALUES = ("standard", "fast")
-CENTRAL_QUEUE_STATES = {
-    TaskState.Menxia.value: "menxia",
-    TaskState.Assigned.value: "shangshu",
-    TaskState.Review.value: "shangshu",
-}
-CENTRAL_QUEUE_SLA = {
-    "standard": {
-        TaskState.Menxia.value: 30 * 60,
-        TaskState.Assigned.value: 20 * 60,
-        TaskState.Review.value: 20 * 60,
-    },
-    "fast": {
-        TaskState.Menxia.value: 8 * 60,
-        TaskState.Assigned.value: 5 * 60,
-        TaskState.Review.value: 8 * 60,
-    },
-}
-POLICY_VERSION = "2026-03-24-p1"
-
-STATE_LABELS = {
-    TaskState.Pending.value: "待处理",
-    TaskState.Sili.value: "司礼监",
-    TaskState.Zhongshu.value: "中书省",
-    TaskState.Menxia.value: "门下省",
-    TaskState.Assigned.value: "尚书省",
-    TaskState.Next.value: "待执行",
-    TaskState.Doing.value: "执行中",
-    TaskState.Review.value: "审查",
-    TaskState.Done.value: "完成",
-    TaskState.Blocked.value: "阻塞",
-    TaskState.Cancelled.value: "已取消",
-}
-
-STATE_DEFAULT_ORG = {
-    TaskState.Pending.value: "皇上",
-    TaskState.Sili.value: "司礼监",
-    TaskState.Zhongshu.value: "中书省",
-    TaskState.Menxia.value: "门下省",
-    TaskState.Assigned.value: "尚书省",
-    TaskState.Review.value: "尚书省",
-    TaskState.Done.value: "皇上",
-    TaskState.Blocked.value: "阻塞",
-    TaskState.Cancelled.value: "皇上",
-}
-
-STATE_OWNER_AGENT = {
-    TaskState.Pending.value: "sili",
-    TaskState.Sili.value: "sili",
-    TaskState.Zhongshu.value: "zhongshu",
-    TaskState.Menxia.value: "menxia",
-    TaskState.Assigned.value: "shangshu",
-    TaskState.Review.value: "shangshu",
-}
-
-STATE_DISPATCH_AGENT = {
-    TaskState.Sili.value: "sili",
-    TaskState.Zhongshu.value: "zhongshu",
-    TaskState.Menxia.value: "menxia",
-    TaskState.Assigned.value: "shangshu",
-    TaskState.Review.value: "shangshu",
-}
-
-ORG_AGENT_MAP = {
-    "礼部": "libu",
-    "户部": "hubu",
-    "兵部": "bingbu",
-    "刑部": "xingbu",
-    "工部": "gongbu",
-    "吏部": "libu_hr",
-}
-
-AGENT_ORG_MAP = {value: key for key, value in ORG_AGENT_MAP.items()}
-
-VALID_TRANSITIONS = {
-    TaskState.Pending.value: {TaskState.Sili.value, TaskState.Cancelled.value},
-    TaskState.Sili.value: {TaskState.Zhongshu.value, TaskState.Cancelled.value},
-    TaskState.Zhongshu.value: {TaskState.Menxia.value, TaskState.Blocked.value, TaskState.Cancelled.value},
-    TaskState.Menxia.value: {TaskState.Assigned.value, TaskState.Zhongshu.value, TaskState.Cancelled.value},
-    TaskState.Assigned.value: {TaskState.Next.value, TaskState.Doing.value, TaskState.Blocked.value, TaskState.Cancelled.value},
-    TaskState.Next.value: {TaskState.Doing.value, TaskState.Blocked.value, TaskState.Cancelled.value},
-    TaskState.Doing.value: {TaskState.Review.value, TaskState.Blocked.value, TaskState.Cancelled.value},
-    TaskState.Review.value: {TaskState.Done.value, TaskState.Doing.value, TaskState.Cancelled.value},
-    TaskState.Blocked.value: {
-        TaskState.Pending.value,
-        TaskState.Sili.value,
-        TaskState.Zhongshu.value,
-        TaskState.Menxia.value,
-        TaskState.Assigned.value,
-        TaskState.Next.value,
-        TaskState.Doing.value,
-        TaskState.Review.value,
-    },
-    TaskState.Done.value: set(),
-    TaskState.Cancelled.value: set(),
-}
-
-MANUAL_ADVANCE_FLOW = {
-    TaskState.Pending.value: (TaskState.Sili.value, "皇上", "司礼监", "待处理旨意转交司礼监分办"),
-    TaskState.Sili.value: (TaskState.Zhongshu.value, "司礼监", "中书省", "司礼监分办完毕，转中书省起草"),
-    TaskState.Zhongshu.value: (TaskState.Menxia.value, "中书省", "门下省", "中书省方案提交门下省审议"),
-    TaskState.Menxia.value: (TaskState.Assigned.value, "门下省", "尚书省", "门下省准奏，转尚书省派发"),
-    TaskState.Assigned.value: (TaskState.Doing.value, "尚书省", "__execution__", "尚书省开始派发执行"),
-    TaskState.Next.value: (TaskState.Doing.value, "__execution__", "__execution__", "待执行任务开始执行"),
-    TaskState.Doing.value: (TaskState.Review.value, "__execution__", "尚书省", "执行部门完成，移交尚书省审查汇总"),
-    TaskState.Review.value: (TaskState.Done.value, "尚书省", "皇上", "全流程完成，回奏皇上"),
-}
-
-DEFAULT_ALLOW_AGENTS = {
-    "sili": {"zhongshu"},
-    "zhongshu": {"menxia", "shangshu"},
-    "menxia": {"zhongshu", "shangshu"},
-    "shangshu": {"hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"},
-    "hubu": {"shangshu"},
-    "libu": {"shangshu"},
-    "bingbu": {"shangshu"},
-    "xingbu": {"shangshu"},
-    "gongbu": {"shangshu"},
-    "libu_hr": {"shangshu"},
-    "zaochao": set(),
-}
-
-CONSULTATION_ALLOW_AGENTS = {
-    "zhongshu": {"menxia", "shangshu"},
-    "menxia": {"zhongshu", "shangshu"},
-    "shangshu": {"menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"},
-    "hubu": {"shangshu"},
-    "libu": {"shangshu"},
-    "bingbu": {"shangshu"},
-    "xingbu": {"shangshu"},
-    "gongbu": {"shangshu"},
-    "libu_hr": {"shangshu"},
-}
+TERMINAL_STATES = set(_TERMINAL_STATES)
+EXECUTION_STATES = set(_EXECUTION_STATES)
+TASK_LANE_VALUES = tuple(CENTRAL_QUEUE_SLA.keys())
+VALID_TRANSITIONS = {state: set(targets) for state, targets in _VALID_TRANSITIONS.items()}
+DEFAULT_ALLOW_AGENTS = {state: set(targets) for state, targets in _DEFAULT_ALLOW_AGENTS.items()}
+CONSULTATION_ALLOW_AGENTS = {state: set(targets) for state, targets in _CONSULTATION_ALLOW_AGENTS.items()}
+POLICY_VERSION = "2026-03-24-p2"
 
 HIGH_PRIVILEGE_ACTORS = {"emperor", "system"}
 SCHEDULER_ACTORS = {"sili", "system", "emperor"}
@@ -301,6 +180,13 @@ def resolve_execution_org(task: dict[str, Any]) -> str:
     if target_org in ORG_AGENT_MAP:
         return target_org
     return ""
+
+
+def resolve_state_org(task: dict[str, Any], state: str | None = None) -> str:
+    current = canonicalize_state(state or task.get("state"))
+    if current in EXECUTION_STATES:
+        return resolve_execution_org(task)
+    return STATE_DEFAULT_ORG.get(current, (task.get("org") or "").strip())
 
 
 def is_fast_lane(task: dict[str, Any]) -> bool:

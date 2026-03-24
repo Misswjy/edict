@@ -28,12 +28,12 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 log = logging.getLogger("edict")
+settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理。"""
-    settings = get_settings()
     log.info(f"🏛️ Edict Backend starting on port {settings.port}...")
 
     # 连接 Event Bus
@@ -54,10 +54,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — 开发环境允许所有来源
+# CORS — 默认仅允许本地看板/前端来源，远程部署需显式配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -20,6 +20,7 @@ export default function App() {
   const setActiveTab = useStore((s) => s.setActiveTab);
   const liveStatus = useStore((s) => s.liveStatus);
   const countdown = useStore((s) => s.countdown);
+  const realtimeConnected = useStore((s) => s.realtimeConnected);
   const loadAll = useStore((s) => s.loadAll);
 
   useEffect(() => {
@@ -58,11 +59,14 @@ export default function App() {
           <span className={`chip ${syncOk ? 'ok' : syncOk === false ? 'err' : ''}`}>
             {syncOk ? '✅ 同步正常' : syncOk === false ? '❌ 服务器未启动' : '⏳ 连接中…'}
           </span>
+          <span className={`chip ${realtimeConnected ? 'ok' : ''}`}>
+            {realtimeConnected ? '⚡ WebSocket 实时中' : '⟳ 轮询兜底中'}
+          </span>
           <span className="chip">{activeEdicts.length} 道旨意</span>
           <button className="btn-refresh" onClick={() => loadAll()}>
             ⟳ 刷新
           </button>
-          <span style={{ fontSize: 11, color: 'var(--muted)' }}>⟳ {countdown}s</span>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>fallback {countdown}s</span>
         </div>
       </div>
 

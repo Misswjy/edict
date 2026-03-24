@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.task import Task
@@ -37,6 +38,7 @@ from ..task_contract import (
     next_manual_transition,
     queue_sla_seconds,
     resolve_dispatch_agent,
+    resolve_state_org,
     review_transition,
     validate_transition,
 )
@@ -71,38 +73,53 @@ class TaskService:
         actor: ActorContext | None = None,
     ) -> Task:
         actor = actor or make_actor_context("system", source="edict-backend")
-        task_id = await self._next_task_id()
         now = datetime.now(timezone.utc).isoformat()
-        scheduler = self._default_scheduler(updated_at=now)
-        task = Task(
-            id=task_id,
-            title=title,
-            official=official,
-            org="司礼监",
-            state=initial_state,
-            now="等待司礼监接旨分办",
-            priority=priority,
-            lane=canonicalize_lane(lane),
-            template_id=template_id,
-            template_params=template_params or {},
-            target_dept=target_dept or "",
-            state_version=1,
-            flow_log=[
-                {
-                    "at": now,
-                    "from": "皇上",
-                    "to": "司礼监",
-                    "remark": f"下旨：{title}",
-                }
-            ],
-            progress_log=[],
-            consult_log=[],
-            todos=[],
-            scheduler=scheduler,
-        )
-        self.db.add(task)
-        await self.db.flush()
-        await self.db.commit()
+        task: Task | None = None
+        last_error: IntegrityError | None = None
+
+        for attempt in range(1, 6):
+            task_id = await self._next_task_id()
+            scheduler = self._default_scheduler(updated_at=now)
+            task = Task(
+                id=task_id,
+                title=title,
+                official=official,
+                org="司礼监",
+                state=initial_state,
+                now="等待司礼监接旨分办",
+                priority=priority,
+                lane=canonicalize_lane(lane),
+                template_id=template_id,
+                template_params=template_params or {},
+                target_dept=target_dept or "",
+                state_version=1,
+                flow_log=[
+                    {
+                        "at": now,
+                        "from": "皇上",
+                        "to": "司礼监",
+                        "remark": f"下旨：{title}",
+                    }
+                ],
+                progress_log=[],
+                consult_log=[],
+                todos=[],
+                scheduler=scheduler,
+            )
+            self.db.add(task)
+            try:
+                await self.db.flush()
+                await self.db.commit()
+                break
+            except IntegrityError as exc:
+                last_error = exc
+                await self.db.rollback()
+                log.warning("task id collision on create_task attempt=%s title=%s retrying", attempt, title)
+        else:
+            assert last_error is not None
+            raise last_error
+
+        assert task is not None
 
         await self.bus.publish(
             topic=TOPIC_TASK_CREATED,
@@ -160,7 +177,8 @@ class TaskService:
         task_dict["state"] = new_state.value
         task_dict["now"] = reason or task.now
         self._bump_state_version(task, task_dict)
-        new_org = task_dict.get("org", task.org)
+        new_org = resolve_state_org(task_dict, new_state.value) or task.org
+        task_dict["org"] = new_org
         task_dict.setdefault("flow_log", []).append(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
@@ -833,6 +851,7 @@ class TaskService:
 
     async def _publish_state_event(self, task: Task, actor: ActorContext, from_state: str, reason: str) -> None:
         topic = TOPIC_TASK_COMPLETED if task.state.value in TERMINAL_STATES else TOPIC_TASK_STATUS
+        task_payload = task.to_dict()
         await self.bus.publish(
             topic=topic,
             trace_id=task.id,
@@ -843,7 +862,11 @@ class TaskService:
                 "from": from_state,
                 "to": task.state.value,
                 "reason": reason,
-                "task": task.to_dict(),
+                "org": task_payload.get("org", ""),
+                "targetDept": task_payload.get("targetDept", ""),
+                "lane": task_payload.get("lane", "standard"),
+                "_stateVersion": task_payload.get("_stateVersion", int(task.state_version or 1)),
+                "task": task_payload,
             },
             meta=self._event_meta(actor, task),
             dedupe_key=f"task-state:{task.id}:{task.state.value}:v{task.state_version}",

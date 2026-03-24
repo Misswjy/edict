@@ -1,11 +1,12 @@
 /**
  * Zustand Store — 三省六部看板状态管理
- * HTTP 5s 轮询，无 WebSocket
+ * WebSocket 实时推送 + 轮询兜底
  */
 
 import { create } from 'zustand';
 import {
   api,
+  buildWsUrl,
   type Task,
   type LiveStatus,
   type AgentConfig,
@@ -15,36 +16,22 @@ import {
   type SubConfig,
   type ChangeLogEntry,
 } from './api';
+import {
+  DEPTS as GENERATED_DEPTS,
+  DEPT_COLOR as GENERATED_DEPT_COLOR,
+  PIPE as GENERATED_PIPE,
+  PIPE_STATE_IDX as GENERATED_PIPE_STATE_IDX,
+  STATE_LABEL as GENERATED_STATE_LABEL,
+} from './generated/institutionSchema';
 
-// ── Pipeline Definition (PIPE) ──
+type PipeDefinition = { key: string; dept: string; icon: string; action: string };
+type DeptDefinition = { id: string; label: string; emoji: string; role: string; rank: string };
 
-export const PIPE = [
-  { key: 'Inbox',    dept: '皇上',   icon: '👑', action: '下旨' },
-  { key: 'Sili',     dept: '司礼监', icon: '🧾', action: '分办' },
-  { key: 'Zhongshu', dept: '中书省', icon: '📜', action: '起草' },
-  { key: 'Menxia',   dept: '门下省', icon: '🔍', action: '审议' },
-  { key: 'Assigned', dept: '尚书省', icon: '📮', action: '派发' },
-  { key: 'Doing',    dept: '六部',   icon: '⚙️', action: '执行' },
-  { key: 'Review',   dept: '尚书省', icon: '🔎', action: '汇总' },
-  { key: 'Done',     dept: '回奏',   icon: '✅', action: '完成' },
-] as const;
-
-export const PIPE_STATE_IDX: Record<string, number> = {
-  Inbox: 0, Pending: 0, Sili: 1, Zhongshu: 2, Menxia: 3,
-  Assigned: 4, Doing: 5, Review: 6, Done: 7, Blocked: 5, Cancelled: 5, Next: 4,
-};
-
-export const DEPT_COLOR: Record<string, string> = {
-  '司礼监': '#e8a040', '中书省': '#a07aff', '门下省': '#6a9eff', '尚书省': '#6aef9a',
-  '礼部': '#f5c842', '户部': '#ff9a6a', '兵部': '#ff5270', '刑部': '#cc4444',
-  '工部': '#44aaff', '吏部': '#9b59b6', '皇上': '#ffd700', '回奏': '#2ecc8a',
-};
-
-export const STATE_LABEL: Record<string, string> = {
-  Inbox: '收件', Pending: '待处理', Sili: '司礼监分办', Zhongshu: '中书起草',
-  Menxia: '门下审议', Assigned: '已派发', Doing: '执行中', Review: '待审查',
-  Done: '已完成', Blocked: '阻塞', Cancelled: '已取消', Next: '待执行',
-};
+export const PIPE: ReadonlyArray<PipeDefinition> = GENERATED_PIPE;
+export const PIPE_STATE_IDX: Record<string, number> = { ...GENERATED_PIPE_STATE_IDX };
+export const DEPT_COLOR: Record<string, string> = { ...GENERATED_DEPT_COLOR };
+export const STATE_LABEL: Record<string, string> = { ...GENERATED_STATE_LABEL };
+export const DEPTS: ReadonlyArray<DeptDefinition> = GENERATED_DEPTS;
 
 export function deptColor(d: string): string {
   return DEPT_COLOR[d] || '#6a9eff';
@@ -96,22 +83,6 @@ export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'memorials', label: '奏折阁',   icon: '📜' },
   { key: 'templates', label: '旨库',     icon: '📋' },
   { key: 'morning',   label: '天下要闻', icon: '🌅' },
-];
-
-// ── DEPTS for monitor ──
-
-export const DEPTS = [
-  { id: 'sili',     label: '司礼监', emoji: '🧾', role: '掌印秉笔', rank: '内廷' },
-  { id: 'zhongshu', label: '中书省', emoji: '📜', role: '中书令',   rank: '正一品' },
-  { id: 'menxia',   label: '门下省', emoji: '🔍', role: '侍中',     rank: '正一品' },
-  { id: 'shangshu', label: '尚书省', emoji: '📮', role: '尚书令',   rank: '正一品' },
-  { id: 'libu',     label: '礼部',   emoji: '📝', role: '礼部尚书', rank: '正二品' },
-  { id: 'hubu',     label: '户部',   emoji: '💰', role: '户部尚书', rank: '正二品' },
-  { id: 'bingbu',   label: '兵部',   emoji: '⚔️', role: '兵部尚书', rank: '正二品' },
-  { id: 'xingbu',   label: '刑部',   emoji: '⚖️', role: '刑部尚书', rank: '正二品' },
-  { id: 'gongbu',   label: '工部',   emoji: '🔧', role: '工部尚书', rank: '正二品' },
-  { id: 'libu_hr',  label: '吏部',   emoji: '👔', role: '吏部尚书', rank: '正二品' },
-  { id: 'zaochao',  label: '钦天监', emoji: '📰', role: '朝报官',   rank: '正三品' },
 ];
 
 // ── Templates ──
@@ -267,6 +238,8 @@ interface AppStore {
   selectedOfficial: string | null;
   modalTaskId: string | null;
   countdown: number;
+  realtimeConnected: boolean;
+  realtimeSeq: number;
 
   // Toast
   toasts: { id: number; msg: string; type: 'ok' | 'err' }[];
@@ -309,6 +282,8 @@ export const useStore = create<AppStore>((set, get) => ({
   selectedOfficial: null,
   modalTaskId: null,
   countdown: 5,
+  realtimeConnected: false,
+  realtimeSeq: 0,
 
   toasts: [],
 
@@ -400,21 +375,131 @@ export const useStore = create<AppStore>((set, get) => ({
     await s.loadLive();
     const tab = s.activeTab;
     if (['models', 'skills'].includes(tab)) await s.loadAgentConfig();
+    if (tab === 'monitor') await s.loadAgentsStatus();
   },
 }));
 
-// ── Countdown & Polling ──
+// ── Realtime & Fallback Polling ──
 
 let _cdTimer: ReturnType<typeof setInterval> | null = null;
+let _ws: WebSocket | null = null;
+let _wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let _wsBackoffMs = 1000;
+let _realtimeSeq = 0;
+const _recentEventIds: string[] = [];
+const _recentEventSet = new Set<string>();
+let _liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let _agentsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+const POLL_INTERVAL_SEC = 5;
+const REALTIME_FALLBACK_SEC = 30;
+
+function _rememberEventId(eventId: string): boolean {
+  if (!eventId) return true;
+  if (_recentEventSet.has(eventId)) return false;
+  _recentEventSet.add(eventId);
+  _recentEventIds.push(eventId);
+  if (_recentEventIds.length > 200) {
+    const expired = _recentEventIds.shift();
+    if (expired) _recentEventSet.delete(expired);
+  }
+  return true;
+}
+
+function _scheduleLiveRefresh(delayMs = 120) {
+  if (_liveRefreshTimer) return;
+  _liveRefreshTimer = setTimeout(() => {
+    _liveRefreshTimer = null;
+    void useStore.getState().loadLive();
+  }, delayMs);
+}
+
+function _scheduleAgentsRefresh(delayMs = 120) {
+  if (_agentsRefreshTimer) return;
+  _agentsRefreshTimer = setTimeout(() => {
+    _agentsRefreshTimer = null;
+    const state = useStore.getState();
+    if (state.activeTab === 'monitor') {
+      void state.loadAgentsStatus();
+    }
+  }, delayMs);
+}
+
+function _setRealtimeConnected(connected: boolean) {
+  useStore.setState({
+    realtimeConnected: connected,
+    countdown: connected ? REALTIME_FALLBACK_SEC : POLL_INTERVAL_SEC,
+  });
+}
+
+function _handleRealtimeMessage(raw: string) {
+  let message: unknown;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!message || typeof message !== 'object') return;
+  const packet = message as { type?: string; topic?: string; data?: { event_id?: string } };
+  if (packet.type !== 'event') return;
+  const eventId = packet.data?.event_id || `${packet.topic || 'unknown'}:${_realtimeSeq + 1}`;
+  if (!_rememberEventId(eventId)) return;
+  _realtimeSeq += 1;
+  useStore.setState({ realtimeSeq: _realtimeSeq, realtimeConnected: true });
+
+  const topic = packet.topic || '';
+  if (topic.startsWith('task.')) {
+    _scheduleLiveRefresh();
+  }
+  if (topic.startsWith('agent.') || topic === 'task.dispatch' || topic === 'task.escalated') {
+    _scheduleAgentsRefresh();
+  }
+}
+
+function _scheduleRealtimeReconnect() {
+  if (_wsReconnectTimer || typeof window === 'undefined') return;
+  const delay = _wsBackoffMs;
+  _wsReconnectTimer = setTimeout(() => {
+    _wsReconnectTimer = null;
+    _connectRealtime();
+  }, delay);
+  _wsBackoffMs = Math.min(_wsBackoffMs * 2, 15000);
+}
+
+function _connectRealtime() {
+  if (_ws || typeof window === 'undefined') return;
+  const ws = new WebSocket(buildWsUrl('/ws'));
+  _ws = ws;
+  ws.onopen = () => {
+    _wsBackoffMs = 1000;
+    _setRealtimeConnected(true);
+    ws.send(JSON.stringify({ type: 'subscribe', topics: ['task.*', 'agent.heartbeat'] }));
+  };
+  ws.onmessage = (event) => {
+    if (typeof event.data === 'string') {
+      _handleRealtimeMessage(event.data);
+    }
+  };
+  ws.onerror = () => {
+    ws.close();
+  };
+  ws.onclose = () => {
+    if (_ws === ws) _ws = null;
+    _setRealtimeConnected(false);
+    _scheduleRealtimeReconnect();
+  };
+}
 
 export function startPolling() {
   if (_cdTimer) return;
   useStore.getState().loadAll();
+  _connectRealtime();
   _cdTimer = setInterval(() => {
     const s = useStore.getState();
+    const interval = s.realtimeConnected ? REALTIME_FALLBACK_SEC : POLL_INTERVAL_SEC;
     const cd = s.countdown - 1;
     if (cd <= 0) {
-      s.setCountdown(5);
+      s.setCountdown(interval);
       s.loadAll();
     } else {
       s.setCountdown(cd);
@@ -427,6 +512,23 @@ export function stopPolling() {
     clearInterval(_cdTimer);
     _cdTimer = null;
   }
+  if (_wsReconnectTimer) {
+    clearTimeout(_wsReconnectTimer);
+    _wsReconnectTimer = null;
+  }
+  if (_liveRefreshTimer) {
+    clearTimeout(_liveRefreshTimer);
+    _liveRefreshTimer = null;
+  }
+  if (_agentsRefreshTimer) {
+    clearTimeout(_agentsRefreshTimer);
+    _agentsRefreshTimer = null;
+  }
+  if (_ws) {
+    _ws.close();
+    _ws = null;
+  }
+  _setRealtimeConnected(false);
 }
 
 // ── Utility ──

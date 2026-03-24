@@ -15,10 +15,19 @@
 import json
 import logging
 import os
+import pathlib
+import sys
 import time
 import uuid
 
 logger = logging.getLogger('court_discuss')
+
+BASE = pathlib.Path(__file__).resolve().parent
+SCRIPTS = BASE.parent / 'scripts'
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from file_lock import atomic_json_read, atomic_json_update
 
 # ── 官员角色设定 ──
 
@@ -108,7 +117,64 @@ FATE_EVENTS = [
 
 # ── Session 管理 ──
 
-_sessions: dict[str, dict] = {}
+_SESSION_STORE_PATH = BASE.parent / 'data' / 'court_discuss_sessions.json'
+
+
+def set_session_store_path(path: str | os.PathLike[str]):
+    """允许 server/tests 指定会话存储位置。"""
+    global _SESSION_STORE_PATH
+    _SESSION_STORE_PATH = pathlib.Path(path)
+
+
+def get_session_store_path() -> pathlib.Path:
+    return _SESSION_STORE_PATH
+
+
+def _normalize_session_store(data) -> dict[str, dict]:
+    if not isinstance(data, dict):
+        return {}
+
+    normalized: dict[str, dict] = {}
+    for sid, raw in data.items():
+        if not isinstance(raw, dict):
+            continue
+        session_id = str(raw.get('session_id') or sid).strip()
+        if not session_id:
+            continue
+        session = dict(raw)
+        session['session_id'] = session_id
+        session['topic'] = str(session.get('topic', ''))
+        session['task_id'] = str(session.get('task_id', ''))
+        session['officials'] = session.get('officials', []) if isinstance(session.get('officials'), list) else []
+        session['messages'] = session.get('messages', []) if isinstance(session.get('messages'), list) else []
+        try:
+            session['round'] = int(session.get('round', 0) or 0)
+        except Exception:
+            session['round'] = 0
+        session['phase'] = str(session.get('phase') or 'discussing')
+        created_at = session.get('created_at') or time.time()
+        session['created_at'] = created_at
+        session['updated_at'] = session.get('updated_at') or created_at
+        if 'summary' in session and session['summary'] is not None:
+            session['summary'] = str(session.get('summary', ''))
+        normalized[session_id] = session
+    return normalized
+
+
+def _read_sessions() -> dict[str, dict]:
+    return _normalize_session_store(atomic_json_read(_SESSION_STORE_PATH, {}))
+
+
+def _update_sessions(mutator):
+    holder = {}
+
+    def modifier(current):
+        sessions = _normalize_session_store(current)
+        holder['value'] = mutator(sessions)
+        return sessions
+
+    atomic_json_update(_SESSION_STORE_PATH, modifier, {})
+    return holder.get('value')
 
 
 def create_session(topic: str, official_ids: list[str], task_id: str = '') -> dict:
@@ -124,6 +190,7 @@ def create_session(topic: str, official_ids: list[str], task_id: str = '') -> di
     if not officials:
         return {'ok': False, 'error': '至少选择一位官员'}
 
+    now = time.time()
     session = {
         'session_id': session_id,
         'topic': topic,
@@ -132,42 +199,24 @@ def create_session(topic: str, official_ids: list[str], task_id: str = '') -> di
         'messages': [{
             'type': 'system',
             'content': f'🏛 朝堂议政开始 —— 议题：{topic}',
-            'timestamp': time.time(),
+            'timestamp': now,
         }],
         'round': 0,
         'phase': 'discussing',  # discussing | concluded
-        'created_at': time.time(),
+        'created_at': now,
+        'updated_at': now,
     }
 
-    _sessions[session_id] = session
+    _update_sessions(lambda sessions: sessions.__setitem__(session_id, session))
     return _serialize(session)
 
 
 def advance_discussion(session_id: str, user_message: str = None,
                        decree: str = None) -> dict:
     """推进一轮讨论，使用内置模拟或 LLM。"""
-    session = _sessions.get(session_id)
+    session = _read_sessions().get(session_id)
     if not session:
         return {'ok': False, 'error': f'会话 {session_id} 不存在'}
-
-    session['round'] += 1
-    round_num = session['round']
-
-    # 记录皇帝发言
-    if user_message:
-        session['messages'].append({
-            'type': 'emperor',
-            'content': user_message,
-            'timestamp': time.time(),
-        })
-
-    # 记录天命降临
-    if decree:
-        session['messages'].append({
-            'type': 'decree',
-            'content': decree,
-            'timestamp': time.time(),
-        })
 
     # 尝试用 LLM 生成讨论
     llm_result = _llm_discuss(session, user_message, decree)
@@ -180,37 +229,62 @@ def advance_discussion(session_id: str, user_message: str = None,
         new_messages = _simulated_discuss(session, user_message, decree)
         scene_note = None
 
-    # 添加到历史
-    for msg in new_messages:
-        session['messages'].append({
-            'type': 'official',
-            'official_id': msg.get('official_id', ''),
-            'official_name': msg.get('name', ''),
-            'content': msg.get('content', ''),
-            'emotion': msg.get('emotion', 'neutral'),
-            'action': msg.get('action'),
-            'timestamp': time.time(),
-        })
+    def mutate(sessions):
+        current = sessions.get(session_id)
+        if not current:
+            return {'ok': False, 'error': f'会话 {session_id} 不存在'}
 
-    if scene_note:
-        session['messages'].append({
-            'type': 'scene_note',
-            'content': scene_note,
-            'timestamp': time.time(),
-        })
+        current['round'] = int(current.get('round', 0) or 0) + 1
+        round_num = current['round']
 
-    return {
-        'ok': True,
-        'session_id': session_id,
-        'round': round_num,
-        'new_messages': new_messages,
-        'scene_note': scene_note,
-        'total_messages': len(session['messages']),
-    }
+        # 记录皇帝发言 / 天命降临
+        if user_message:
+            current['messages'].append({
+                'type': 'emperor',
+                'content': user_message,
+                'timestamp': time.time(),
+            })
+        if decree:
+            current['messages'].append({
+                'type': 'decree',
+                'content': decree,
+                'timestamp': time.time(),
+            })
+
+        # 添加到历史
+        for msg in new_messages:
+            current['messages'].append({
+                'type': 'official',
+                'official_id': msg.get('official_id', ''),
+                'official_name': msg.get('name', ''),
+                'content': msg.get('content', ''),
+                'emotion': msg.get('emotion', 'neutral'),
+                'action': msg.get('action'),
+                'timestamp': time.time(),
+            })
+
+        if scene_note:
+            current['messages'].append({
+                'type': 'scene_note',
+                'content': scene_note,
+                'timestamp': time.time(),
+            })
+
+        current['updated_at'] = time.time()
+        return {
+            'ok': True,
+            'session_id': session_id,
+            'round': round_num,
+            'new_messages': new_messages,
+            'scene_note': scene_note,
+            'total_messages': len(current['messages']),
+        }
+
+    return _update_sessions(mutate) or {'ok': False, 'error': f'会话 {session_id} 不存在'}
 
 
 def get_session(session_id: str) -> dict | None:
-    session = _sessions.get(session_id)
+    session = _read_sessions().get(session_id)
     if not session:
         return None
     return _serialize(session)
@@ -218,11 +292,9 @@ def get_session(session_id: str) -> dict | None:
 
 def conclude_session(session_id: str) -> dict:
     """结束议政，生成总结。"""
-    session = _sessions.get(session_id)
+    session = _read_sessions().get(session_id)
     if not session:
         return {'ok': False, 'error': f'会话 {session_id} 不存在'}
-
-    session['phase'] = 'concluded'
 
     # 尝试用 LLM 生成总结
     summary = _llm_summarize(session)
@@ -236,37 +308,54 @@ def conclude_session(session_id: str) -> dict:
         parts = [f"{n}发言{c}次" for n, c in by_name.items()]
         summary = f"历经{session['round']}轮讨论，{'、'.join(parts)}。议题待后续落实。"
 
-    session['messages'].append({
-        'type': 'system',
-        'content': f'📋 朝堂议政结束 —— {summary}',
-        'timestamp': time.time(),
-    })
-    session['summary'] = summary
+    def mutate(sessions):
+        current = sessions.get(session_id)
+        if not current:
+            return {'ok': False, 'error': f'会话 {session_id} 不存在'}
 
-    return {
-        'ok': True,
-        'session_id': session_id,
-        'summary': summary,
-    }
+        current['phase'] = 'concluded'
+        current['messages'].append({
+            'type': 'system',
+            'content': f'📋 朝堂议政结束 —— {summary}',
+            'timestamp': time.time(),
+        })
+        current['summary'] = summary
+        current['updated_at'] = time.time()
+        current['concluded_at'] = current['updated_at']
+
+        return {
+            'ok': True,
+            'session_id': session_id,
+            'summary': summary,
+        }
+
+    return _update_sessions(mutate) or {'ok': False, 'error': f'会话 {session_id} 不存在'}
 
 
 def list_sessions() -> list[dict]:
-    """列出所有活跃会话。"""
-    return [
+    """列出所有会话（支持重启后恢复/复盘）。"""
+    sessions = _read_sessions()
+    rows = [
         {
             'session_id': s['session_id'],
             'topic': s['topic'],
+            'task_id': s.get('task_id', ''),
             'round': s['round'],
             'phase': s['phase'],
             'official_count': len(s['officials']),
             'message_count': len(s['messages']),
+            'summary': s.get('summary', ''),
+            'created_at': s.get('created_at'),
+            'updated_at': s.get('updated_at', s.get('created_at')),
         }
-        for s in _sessions.values()
+        for s in sessions.values()
     ]
+    rows.sort(key=lambda item: item.get('updated_at') or 0, reverse=True)
+    return rows
 
 
 def destroy_session(session_id: str):
-    _sessions.pop(session_id, None)
+    _update_sessions(lambda sessions: sessions.pop(session_id, None))
 
 
 def get_fate_event() -> str:
@@ -690,4 +779,8 @@ def _serialize(session: dict) -> dict:
         'messages': session['messages'],
         'round': session['round'],
         'phase': session['phase'],
+        'summary': session.get('summary', ''),
+        'created_at': session.get('created_at'),
+        'updated_at': session.get('updated_at', session.get('created_at')),
+        'concluded_at': session.get('concluded_at'),
     }

@@ -25,6 +25,7 @@ venv/
 *.swp
 .agent
 .agents
+.qoder
 # Node.js
 node_modules/
 edict/frontend/node_modules/

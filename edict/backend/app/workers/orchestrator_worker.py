@@ -82,7 +82,14 @@ class OrchestratorWorker:
             if events:
                 log.info(f"Recovering {len(events)} stale events from {topic}")
                 for entry_id, event in events:
-                    await self._handle_event(topic, entry_id, event)
+                    try:
+                        await self._handle_event(topic, entry_id, event)
+                        await self.bus.ack(topic, GROUP, entry_id)
+                    except Exception as e:
+                        log.error(
+                            f"Error recovering stale event {entry_id} from {topic}: {e}",
+                            exc_info=True,
+                        )
 
     async def _poll_cycle(self):
         """一次轮询周期：从所有 topic 消费事件。"""
@@ -140,7 +147,23 @@ class OrchestratorWorker:
         """状态变更 → 自动派发下一个 agent。"""
         task_id = payload.get("task_id")
         new_state_str = payload.get("to", "")
-        task_payload = payload.get("task") or {}
+        task_payload = dict(payload.get("task") or {})
+        if task_payload:
+            task_payload.setdefault("id", task_id)
+            task_payload.setdefault("state", new_state_str)
+            task_payload.setdefault("org", payload.get("org", ""))
+            task_payload.setdefault("targetDept", payload.get("targetDept", ""))
+            task_payload.setdefault("_stateVersion", payload.get("_stateVersion") or meta.get("version") or 1)
+            task_payload.setdefault("lane", payload.get("lane", "standard"))
+        else:
+            task_payload = {
+                "id": task_id,
+                "state": new_state_str,
+                "org": payload.get("org", ""),
+                "targetDept": payload.get("targetDept", ""),
+                "_stateVersion": payload.get("_stateVersion") or meta.get("version") or 1,
+                "lane": payload.get("lane", "standard"),
+            }
 
         try:
             new_state = TaskState(new_state_str)

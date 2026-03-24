@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useStore, getPipeStatus, deptColor, stateLabel, STATE_LABEL } from '../store';
-import { api } from '../api';
+import { api, buildWsUrl } from '../api';
+import ConfirmDialog from './ConfirmDialog';
 import type {
   Task,
   TaskActivityData,
@@ -33,6 +34,22 @@ const NEXT_LABELS: Record<string, string> = {
   Review: '完成',
 };
 
+type ConfirmState = {
+  key: string;
+  title: string;
+  message: string;
+  okLabel: string;
+  okClass?: string;
+  note?: string;
+  riskHint?: string;
+  permissionHint?: string;
+  reasonLabel?: string;
+  reasonPlaceholder?: string;
+  showReason?: boolean;
+  defaultReason?: string;
+  onConfirm: (reason: string) => Promise<void> | void;
+};
+
 function fmtStalled(sec: number): string {
   const v = Math.max(0, sec);
   if (v < 60) return `${v}秒`;
@@ -61,7 +78,12 @@ export default function TaskModal() {
 
   const [activityData, setActivityData] = useState<TaskActivityData | null>(null);
   const [schedData, setSchedData] = useState<SchedulerStateData | null>(null);
-  const laTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [dialog, setDialog] = useState<ConfirmState | null>(null);
+  const fallbackTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsBackoffRef = useRef(1000);
+  const wsSeqRef = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
 
   const task = liveStatus?.tasks?.find((t) => t.id === modalTaskId) || null;
@@ -93,16 +115,56 @@ export default function TaskModal() {
 
     const isDone = ['Done', 'Cancelled'].includes(task.state);
     if (!isDone) {
-      laTimerRef.current = setInterval(() => {
+      fallbackTimerRef.current = setInterval(() => {
         fetchActivity();
         fetchSched();
-      }, 4000);
+      }, 15000);
+
+      const connect = () => {
+        if (wsRef.current || !modalTaskId) return;
+        const ws = new WebSocket(buildWsUrl(`/ws/task/${encodeURIComponent(modalTaskId)}`));
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          wsBackoffRef.current = 1000;
+        };
+
+        ws.onmessage = () => {
+          wsSeqRef.current += 1;
+          fetchActivity();
+          fetchSched();
+        };
+
+        ws.onerror = () => {
+          ws.close();
+        };
+
+        ws.onclose = () => {
+          if (wsRef.current === ws) wsRef.current = null;
+          if (wsReconnectRef.current || ['Done', 'Cancelled'].includes(task.state)) return;
+          wsReconnectRef.current = setTimeout(() => {
+            wsReconnectRef.current = null;
+            connect();
+          }, wsBackoffRef.current);
+          wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 15000);
+        };
+      };
+
+      connect();
     }
 
     return () => {
-      if (laTimerRef.current) {
-        clearInterval(laTimerRef.current);
-        laTimerRef.current = null;
+      if (fallbackTimerRef.current) {
+        clearInterval(fallbackTimerRef.current);
+        fallbackTimerRef.current = null;
+      }
+      if (wsReconnectRef.current) {
+        clearTimeout(wsReconnectRef.current);
+        wsReconnectRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
       }
     };
   }, [modalTaskId, task?.state, fetchActivity, fetchSched]);
@@ -143,82 +205,163 @@ export default function TaskModal() {
 
   const doReview = async (action: string) => {
     const labels: Record<string, string> = { approve: '准奏', reject: '封驳' };
-    const comment = prompt(`${labels[action]} ${task.id}\n\n请输入批注（可留空）：`);
-    if (comment === null) return;
-    try {
-      const r = await api.reviewAction(task.id, action, comment || '');
-      if (r.ok) {
-        toast(`✅ ${task.id} 已${labels[action]}`, 'ok');
-        loadAll();
-        close();
-      } else {
-        toast(r.error || '操作失败', 'err');
-      }
-    } catch {
-      toast('服务器连接失败', 'err');
-    }
+    setDialog({
+      key: `review-${action}-${task.id}`,
+      title: `${labels[action]} ${task.id}`,
+      message: action === 'approve' ? '确认通过当前审批节点并推进到下一责任部门。' : '确认退回当前任务，并按状态机语义进入返工路径。',
+      okLabel: action === 'approve' ? '确认准奏' : '确认退回',
+      okClass: action === 'reject' ? 'danger' : undefined,
+      reasonLabel: '审批批注',
+      reasonPlaceholder: action === 'approve' ? '可填写通过说明、附加要求或提醒事项' : '可填写驳回原因、返工要求或补充意见',
+      riskHint: action === 'approve' ? '准奏后会直接推进到下一个节点。' : '驳回会改变流转方向，并通知相关责任方返工。',
+      permissionHint: task.state === 'Menxia' ? '门下省或高权限角色可以审批。' : '皇上或高权限角色可以审批。',
+      onConfirm: async (comment) => {
+        try {
+          const r = await api.reviewAction(task.id, action, comment || '');
+          if (r.ok) {
+            toast(`✅ ${task.id} 已${labels[action]}`, 'ok');
+            loadAll();
+            close();
+          } else {
+            toast(r.error || '操作失败', 'err');
+          }
+        } catch {
+          toast('服务器连接失败', 'err');
+        } finally {
+          setDialog(null);
+        }
+      },
+    });
   };
 
   const doAdvance = async () => {
     const next = NEXT_LABELS[task.state] || '下一步';
-    const comment = prompt(`⏩ 手动推进 ${task.id}\n当前: ${task.state} → 下一步: ${next}\n\n请输入说明（可留空）：`);
-    if (comment === null) return;
-    try {
-      const r = await api.advanceState(task.id, comment || '');
-      if (r.ok) {
-        toast(`⏩ ${r.message}`, 'ok');
-        loadAll();
-        close();
-      } else {
-        toast(r.error || '推进失败', 'err');
-      }
-    } catch {
-      toast('服务器连接失败', 'err');
-    }
+    setDialog({
+      key: `advance-${task.id}`,
+      title: `手动推进 ${task.id}`,
+      message: `当前状态：${STATE_LABEL[task.state] || task.state}，下一步：${next}。`,
+      okLabel: '确认推进',
+      note: '该入口主要用于解卡、补偿或人工兜底，不应替代正常状态机推进。',
+      riskHint: '手动推进会直接切换任务阶段，并可能触发自动派发。',
+      permissionHint: '仅当前负责人或高权限角色可以推进。',
+      reasonLabel: '推进说明',
+      reasonPlaceholder: '说明为什么要人工推进，例如：Agent 卡住、人工确认已完成、需要补偿重放',
+      onConfirm: async (comment) => {
+        try {
+          const r = await api.advanceState(task.id, comment || '');
+          if (r.ok) {
+            toast(`⏩ ${r.message}`, 'ok');
+            loadAll();
+            close();
+          } else {
+            toast(r.error || '推进失败', 'err');
+          }
+        } catch {
+          toast('服务器连接失败', 'err');
+        } finally {
+          setDialog(null);
+        }
+      },
+    });
   };
 
   const doSchedAction = async (action: string) => {
     if (action === 'scan') {
-      try {
-        const r = await api.schedulerScan(180);
-        if (r.ok) toast(`🔍 扫描完成：${r.count || 0} 个动作`, 'ok');
-        else toast(r.error || '扫描失败', 'err');
-        fetchSched();
-      } catch {
-        toast('服务器连接失败', 'err');
-      }
+      setDialog({
+        key: `sched-scan-${task.id}`,
+        title: `立即扫描 ${task.id}`,
+        message: '让司礼监立即检查该任务的停滞、重试、升级与回滚条件。',
+        okLabel: '开始扫描',
+        showReason: false,
+        permissionHint: '仅司礼监调度链路可执行扫描。',
+        onConfirm: async () => {
+          try {
+            const r = await api.schedulerScan(180);
+            if (r.ok) toast(`🔍 扫描完成：${r.count || 0} 个动作`, 'ok');
+            else toast(r.error || '扫描失败', 'err');
+            fetchSched();
+          } catch {
+            toast('服务器连接失败', 'err');
+          } finally {
+            setDialog(null);
+          }
+        },
+      });
       return;
     }
     const labels: Record<string, string> = { retry: '重试', escalate: '升级', rollback: '回滚' };
-    const reason = prompt(`请输入${labels[action]}原因（可留空）：`);
-    if (reason === null) return;
     const handlers: Record<string, (id: string, r: string) => Promise<{ ok: boolean; message?: string; error?: string }>> = {
       retry: api.schedulerRetry,
       escalate: api.schedulerEscalate,
       rollback: api.schedulerRollback,
     };
-    try {
-      const r = await handlers[action](task.id, reason);
-      if (r.ok) toast(r.message || '操作成功', 'ok');
-      else toast(r.error || '操作失败', 'err');
-      fetchSched();
-      loadAll();
-    } catch {
-      toast('服务器连接失败', 'err');
-    }
+    setDialog({
+      key: `sched-${action}-${task.id}`,
+      title: `${labels[action]}调度 ${task.id}`,
+      message: action === 'retry'
+        ? '重新派发当前节点，适用于派发中断或执行方未接单。'
+        : action === 'escalate'
+          ? '将停滞任务升级给更高层协调节点介入推进。'
+          : '把任务回滚到最近稳定快照，用于从失效状态恢复。',
+      okLabel: `确认${labels[action]}`,
+      okClass: action === 'rollback' ? 'danger' : undefined,
+      riskHint: action === 'rollback' ? '回滚会直接修改任务状态并可能重新派发。' : undefined,
+      permissionHint: '仅司礼监调度链路可执行此类操作。',
+      reasonLabel: `${labels[action]}原因`,
+      reasonPlaceholder: action === 'retry'
+        ? '例如：上次派发超时、目标 Agent 未响应'
+        : action === 'escalate'
+          ? '例如：已超过 SLA，需要门下/尚书介入'
+          : '例如：状态异常、恢复到最近稳定节点',
+      onConfirm: async (reason) => {
+        try {
+          const r = await handlers[action](task.id, reason);
+          if (r.ok) toast(r.message || '操作成功', 'ok');
+          else toast(r.error || '操作失败', 'err');
+          fetchSched();
+          loadAll();
+        } catch {
+          toast('服务器连接失败', 'err');
+        } finally {
+          setDialog(null);
+        }
+      },
+    });
   };
 
   const handleStop = () => {
-    const reason = prompt('请输入叫停原因（可留空）：');
-    if (reason === null) return;
-    doTaskAction('stop', reason);
+    setDialog({
+      key: `stop-${task.id}`,
+      title: `叫停 ${task.id}`,
+      message: '把任务切到 Blocked，暂时中止执行与后续流转。',
+      okLabel: '确认叫停',
+      reasonLabel: '叫停原因',
+      reasonPlaceholder: '例如：等待外部信息、需求变更、需要圣裁',
+      riskHint: '叫停会立即中断当前执行节奏。',
+      permissionHint: '仅皇上或司礼监可以执行该控制动作。',
+      onConfirm: async (reason) => {
+        await doTaskAction('stop', reason);
+        setDialog(null);
+      },
+    });
   };
 
   const handleCancel = () => {
-    if (!confirm(`确定要取消 ${task.id} 吗？`)) return;
-    const reason = prompt('请输入取消原因（可留空）：');
-    if (reason === null) return;
-    doTaskAction('cancel', reason);
+    setDialog({
+      key: `cancel-${task.id}`,
+      title: `取消 ${task.id}`,
+      message: '把任务切到 Cancelled。取消后不允许直接 resume。',
+      okLabel: '确认取消',
+      okClass: 'danger',
+      reasonLabel: '取消原因',
+      reasonPlaceholder: '例如：旨意作废、已并入其他任务、方向调整',
+      riskHint: 'Cancelled 是真终态，后续如需恢复应新建任务或显式 reopen。',
+      permissionHint: '仅皇上或司礼监可以执行该控制动作。',
+      onConfirm: async (reason) => {
+        await doTaskAction('cancel', reason);
+        setDialog(null);
+      },
+    });
   };
 
   // Scheduler state
@@ -228,6 +371,24 @@ export default function TaskModal() {
   return (
     <div className="modal-bg open" onClick={close}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
+        {dialog && (
+          <ConfirmDialog
+            key={dialog.key}
+            title={dialog.title}
+            message={dialog.message}
+            okLabel={dialog.okLabel}
+            okClass={dialog.okClass}
+            note={dialog.note}
+            riskHint={dialog.riskHint}
+            permissionHint={dialog.permissionHint}
+            reasonLabel={dialog.reasonLabel}
+            reasonPlaceholder={dialog.reasonPlaceholder}
+            showReason={dialog.showReason}
+            defaultReason={dialog.defaultReason}
+            onOk={(reason) => void dialog.onConfirm(reason)}
+            onCancel={() => setDialog(null)}
+          />
+        )}
         <button className="modal-close" onClick={close}>✕</button>
         <div className="modal-body">
           <div className="modal-id">{task.id}</div>

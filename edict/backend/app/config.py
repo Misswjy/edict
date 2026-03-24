@@ -1,7 +1,12 @@
 """Edict 配置管理 — 从环境变量加载所有配置。"""
 
-from pydantic_settings import BaseSettings
+import secrets
 from functools import lru_cache
+from typing import Literal
+
+from pydantic_settings import BaseSettings
+
+from .security import split_allowed_origins
 
 
 class Settings(BaseSettings):
@@ -17,11 +22,14 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # ── Server ──
-    backend_host: str = "0.0.0.0"
+    backend_host: str = "127.0.0.1"
     backend_port: int = 8000
     port: int = 8000
-    secret_key: str = "change-me-in-production"
+    secret_key: str = secrets.token_urlsafe(32)
     debug: bool = False
+    admin_api_token: str = ""
+    cors_allowed_origins: str = "http://127.0.0.1:7891,http://localhost:7891,http://127.0.0.1:5173,http://localhost:5173"
+    activity_sensitivity: Literal["redacted", "full"] = "redacted"
 
     # ── OpenClaw ──
     openclaw_gateway_url: str = "http://localhost:18789"
@@ -59,6 +67,10 @@ class Settings(BaseSettings):
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return split_allowed_origins(self.cors_allowed_origins)
 
     model_config = {
         "env_file": ".env",

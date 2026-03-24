@@ -8,11 +8,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
+from .auth import require_control_plane_access
 from ..db import get_db
 from ..services.event_bus import get_event_bus
 
 log = logging.getLogger("edict.api.admin")
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_control_plane_access)])
 
 
 @router.get("/health/deep")

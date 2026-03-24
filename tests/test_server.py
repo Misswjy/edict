@@ -1,5 +1,6 @@
 """tests for dashboard/server.py route handling and task mutations"""
 
+import importlib
 import json
 import pathlib
 import sys
@@ -27,6 +28,8 @@ def _configure_server(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, '_trigger_refresh_async', lambda: None, raising=False)
     monkeypatch.setattr(srv, 'dispatch_for_state', lambda *args, **kwargs: None, raising=False)
     monkeypatch.setattr(srv, 'wake_agent', lambda *args, **kwargs: {'ok': True, 'message': 'noop'}, raising=False)
+    if hasattr(srv, 'cd_set_store_path'):
+        srv.cd_set_store_path(data_dir / 'court_discuss_sessions.json')
     return srv, data_dir
 
 
@@ -62,6 +65,41 @@ def test_healthz(tmp_path, monkeypatch):
     assert body['status'] in ('ok', 'degraded')
 
     httpd.server_close()
+
+
+def test_court_discuss_session_persists_across_reload(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+
+    created = srv.cd_create('讨论架构改造收尾方案', ['sili', 'zhongshu', 'menxia'], 'JJC-COURT-001')
+    assert created['ok'] is True
+    session_id = created['session_id']
+
+    store_path = data_dir / 'court_discuss_sessions.json'
+    assert store_path.exists()
+
+    advanced = srv.cd_advance(session_id, '请各位速议 P3 收尾重点', None)
+    assert advanced['ok'] is True
+    assert advanced['round'] == 1
+
+    concluded = srv.cd_conclude(session_id)
+    assert concluded['ok'] is True
+    assert concluded['summary']
+
+    import court_discuss as cd
+
+    reloaded = importlib.reload(cd)
+    reloaded.set_session_store_path(store_path)
+
+    recovered = reloaded.get_session(session_id)
+    assert recovered is not None
+    assert recovered['phase'] == 'concluded'
+    assert recovered['summary'] == concluded['summary']
+    assert any('朝堂议政结束' in msg.get('content', '') for msg in recovered['messages'])
+
+    sessions = reloaded.list_sessions()
+    assert sessions
+    assert sessions[0]['session_id'] == session_id
+    assert sessions[0]['summary'] == concluded['summary']
 
 
 def test_server_concurrent_create_no_duplicate_ids(tmp_path, monkeypatch):
@@ -271,3 +309,25 @@ def test_task_consult_preserves_state_and_logs_consultation(tmp_path, monkeypatc
     assert task['state'] == 'Assigned'
     assert task['org'] == '尚书省'
     assert task['consultLog'][0]['to'] == 'gongbu'
+
+
+def test_archive_all_done_rejects_unauthorized_actor(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    tasks = [
+        {
+            'id': 'JJC-ARCHIVE-001',
+            'title': '已完成任务',
+            'state': 'Done',
+            'org': '皇上',
+            'archived': False,
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+        }
+    ]
+    (data_dir / 'tasks_source.json').write_text(json.dumps(tasks, ensure_ascii=False))
+
+    result = srv.handle_archive_task('', True, archive_all_done=True, actor=srv.make_actor_context('gongbu', source='test'))
+
+    assert result['ok'] is False
+    assert '无权执行归档' in result['error']
+    [task] = _read_tasks(data_dir)
+    assert task['archived'] is False

@@ -264,6 +264,8 @@
 
 ### 9. 将前端从轮询逐步切到事件驱动
 
+状态：已完成（2026-03-24）
+
 风险级别：中
 
 问题：
@@ -289,6 +291,8 @@
 
 ### 10. 拆分旧版 `dashboard/server.py`
 
+状态：已完成（2026-03-24）
+
 风险级别：中
 
 问题：
@@ -311,6 +315,8 @@
 - [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
 
 ### 11. 建立架构契约测试
+
+状态：已完成（2026-03-24）
 
 风险级别：中
 
@@ -335,6 +341,8 @@
 - [tests](/Users/xingzhan/Documents/edict/tests)
 
 ### 12. 将组织角色和状态定义配置化
+
+状态：已完成（2026-03-24）
 
 风险级别：中
 
@@ -366,6 +374,8 @@
 
 ### 13. 替换原生 `prompt/confirm`，统一为正式交互组件
 
+状态：已完成（2026-03-24）
+
 风险级别：低
 
 问题：
@@ -390,6 +400,8 @@
 
 ### 14. 持久化朝堂议政会话
 
+状态：已完成（2026-03-24）
+
 风险级别：低
 
 问题：
@@ -411,6 +423,8 @@
 - [dashboard/court_discuss.py](/Users/xingzhan/Documents/edict/dashboard/court_discuss.py)
 
 ### 15. 收紧安全默认值
+
+状态：已完成（2026-03-24）
 
 风险级别：低
 
@@ -483,6 +497,8 @@
 
 ### A1. 后端 `transition_state()` 在多数非执行态流转后不会同步 `org`
 
+状态：已完成（2026-03-24）
+
 风险级别：高
 
 问题：
@@ -509,6 +525,8 @@
 - [edict/backend/app/task_contract.py](/Users/xingzhan/Documents/edict/edict/backend/app/task_contract.py)
 
 ### A2. 事件驱动主链路进入执行态时会丢失派发目标
+
+状态：已完成（2026-03-24）
 
 风险级别：高
 
@@ -537,6 +555,8 @@
 
 ### A3. `OrchestratorWorker` 的 stale-event 恢复路径未 ACK
 
+状态：已完成（2026-03-24）
+
 风险级别：高
 
 问题：
@@ -563,6 +583,8 @@
 
 ### A4. `archive_all_done` 仍存在批量归档权限绕过
 
+状态：已完成（2026-03-24）
+
 风险级别：中高
 
 问题：
@@ -587,6 +609,8 @@
 - [tests/test_server.py](/Users/xingzhan/Documents/edict/tests/test_server.py)
 
 ### A5. 高层 E2E 回归测试尚未与新状态机语义对齐
+
+状态：已完成（2026-03-24）
 
 风险级别：中高
 
@@ -614,6 +638,8 @@
 
 ### A6. Alembic 初始迁移仍然依赖运行时代码，且事件模型长度约束不完全一致
 
+状态：已完成（2026-03-24）
+
 风险级别：中
 
 问题：
@@ -639,6 +665,8 @@
 - [edict/backend/app/models/event.py](/Users/xingzhan/Documents/edict/edict/backend/app/models/event.py)
 
 ### A7. 后端数据库模式下的任务 ID 生成仍有并发撞号风险
+
+状态：已完成（2026-03-24）
 
 风险级别：中
 

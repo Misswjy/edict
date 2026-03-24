@@ -13,7 +13,13 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useStore, DEPTS } from '../store';
-import { api } from '../api';
+import {
+  api,
+  type CourtDiscussMessage,
+  type CourtDiscussOfficial,
+  type CourtDiscussSessionData,
+  type CourtDiscussSessionSummary,
+} from '../api';
 
 // ── 常量 ──
 
@@ -38,30 +44,45 @@ const COURT_POSITIONS: Record<string, { x: number; y: number }> = {
   sili: { x: 50, y: 20 }, libu_hr: { x: 50, y: 80 },
 };
 
-interface CourtMessage {
-  type: string;
-  content: string;
-  official_id?: string;
-  official_name?: string;
-  emotion?: string;
-  action?: string;
-  timestamp?: number;
-}
-
 interface CourtSession {
   session_id: string;
   topic: string;
-  officials: Array<{
-    id: string;
-    name: string;
-    emoji: string;
-    role: string;
-    personality: string;
-    speaking_style: string;
-  }>;
-  messages: CourtMessage[];
+  task_id?: string;
+  officials: CourtDiscussOfficial[];
+  messages: CourtDiscussMessage[];
   round: number;
   phase: string;
+  summary?: string;
+  created_at?: number;
+  updated_at?: number;
+  concluded_at?: number;
+}
+
+function fmtSessionTime(ts?: number): string {
+  if (!ts) return '刚刚';
+  return new Date(ts * 1000).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function hydrateSession(data: CourtDiscussSessionData): CourtSession | null {
+  if (!data.ok || !data.session_id || !data.topic) return null;
+  return {
+    session_id: data.session_id,
+    topic: data.topic,
+    task_id: data.task_id || '',
+    officials: data.officials || [],
+    messages: data.messages || [],
+    round: data.round || 0,
+    phase: data.phase || 'discussing',
+    summary: data.summary || '',
+    created_at: data.created_at,
+    updated_at: data.updated_at,
+    concluded_at: data.concluded_at,
+  };
 }
 
 export default function CourtDiscussion() {
@@ -71,6 +92,8 @@ export default function CourtDiscussion() {
   const [topic, setTopic] = useState('');
   const [session, setSession] = useState<CourtSession | null>(null);
   const [loading, setLoading] = useState(false);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [savedSessions, setSavedSessions] = useState<CourtDiscussSessionSummary[]>([]);
   const [autoPlay, setAutoPlay] = useState(false);
   const autoPlayRef = useRef(false);
 
@@ -92,6 +115,18 @@ export default function CourtDiscussion() {
   const toast = useStore((s) => s.toast);
   const liveStatus = useStore((s) => s.liveStatus);
 
+  const loadSavedSessions = useCallback(async () => {
+    setSavedLoading(true);
+    try {
+      const res = await api.courtDiscussList();
+      setSavedSessions(res.sessions || []);
+    } catch {
+      setSavedSessions([]);
+    } finally {
+      setSavedLoading(false);
+    }
+  }, []);
+
   // 自动滚到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -112,6 +147,12 @@ export default function CourtDiscussion() {
     return () => clearInterval(timer);
   }, [autoPlay, session, loading]);
 
+  useEffect(() => {
+    if (phase === 'setup') {
+      void loadSavedSessions();
+    }
+  }, [phase, loadSavedSessions]);
+
   // ── 切换官员选中 ──
   const toggleOfficial = (id: string) => {
     setSelectedIds((prev) => {
@@ -129,7 +170,9 @@ export default function CourtDiscussion() {
     try {
       const res = await api.courtDiscussStart(topic, Array.from(selectedIds));
       if (!res.ok) throw new Error(res.error || '启动失败');
-      setSession(res as unknown as CourtSession);
+      const nextSession = hydrateSession(res);
+      if (!nextSession) throw new Error('会话数据不完整');
+      setSession(nextSession);
       setPhase('session');
     } catch (e: unknown) {
       toast((e as Error).message || '启动失败', 'err');
@@ -150,7 +193,7 @@ export default function CourtDiscussion() {
       // 更新 session messages（追加新消息）
       setSession((prev) => {
         if (!prev) return prev;
-        const newMsgs: CourtMessage[] = [];
+        const newMsgs: CourtDiscussMessage[] = [];
 
         if (userMsg) {
           newMsgs.push({ type: 'emperor', content: userMsg, timestamp: Date.now() / 1000 });
@@ -204,6 +247,23 @@ export default function CourtDiscussion() {
       setLoading(false);
     }
   }, [session, loading]);
+
+  const handleResumeSession = async (sessionId: string) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const res = await api.courtDiscussSession(sessionId);
+      if (!res.ok) throw new Error(res.error || '恢复会话失败');
+      const nextSession = hydrateSession(res);
+      if (!nextSession) throw new Error('会话数据不完整');
+      setSession(nextSession);
+      setPhase('session');
+    } catch (e: unknown) {
+      toast((e as Error).message || '恢复会话失败', 'err');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // ── 皇帝发言 ──
   const handleEmperor = () => {
@@ -282,15 +342,16 @@ export default function CourtDiscussion() {
 
   // ── 重置 ──
   const handleReset = () => {
-    if (session) {
-      api.courtDiscussDestroy(session.session_id).catch(() => {});
-    }
     setPhase('setup');
     setSession(null);
     setAutoPlay(false);
     setEmotions({});
     setSpeakingId(null);
     setDiceResult(null);
+    setShowDecree(false);
+    setUserInput('');
+    setDecreeInput('');
+    void loadSavedSessions();
   };
 
   // ── 预设议题（从当前旨意中提取）──
@@ -326,6 +387,72 @@ export default function CourtDiscussion() {
             择臣上殿，围绕议题展开讨论 · 陛下可随时发言或降下天意改变走向
           </p>
         </div>
+
+        {(savedLoading || savedSessions.length > 0) && (
+          <div className="bg-[var(--panel)] rounded-xl p-4 border border-[var(--line)]">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="text-sm font-semibold">🗂 近来议政</div>
+                <div className="text-[11px] text-[var(--muted)] mt-1">
+                  支持跨重启恢复未散朝会话，也可直接打开已散朝记录复盘。
+                </div>
+              </div>
+              {!savedLoading && (
+                <button
+                  onClick={() => void loadSavedSessions()}
+                  className="text-xs px-2.5 py-1 rounded-lg border border-[var(--line)] text-[var(--muted)] hover:text-[var(--text)] transition"
+                >
+                  刷新
+                </button>
+              )}
+            </div>
+            {savedLoading ? (
+              <div className="text-xs text-[var(--muted)]">正在读取议政记录...</div>
+            ) : (
+              <div className="space-y-2">
+                {savedSessions.slice(0, 6).map((item) => {
+                  const isConcluded = item.phase === 'concluded';
+                  return (
+                    <div
+                      key={item.session_id}
+                      className="rounded-lg border border-[var(--line)] bg-[var(--panel2)] p-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-[var(--text)]">{item.topic}</span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full border border-[var(--line)] text-[var(--muted)]">
+                            {isConcluded ? '已散朝' : '议政中'}
+                          </span>
+                          {item.task_id && (
+                            <span className="text-[10px] text-[var(--muted)]">关联 {item.task_id}</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-[var(--muted)] mt-1">
+                          {item.message_count} 条消息 · 第 {item.round} 轮 · 更新于 {fmtSessionTime(item.updated_at)}
+                        </div>
+                        {(item.summary || '').trim() && (
+                          <div
+                            className="text-[11px] text-[var(--muted)] mt-1"
+                            style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                          >
+                            {item.summary}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => void handleResumeSession(item.session_id)}
+                        disabled={loading}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-300 hover:bg-amber-900/20 transition self-start sm:self-center"
+                      >
+                        {isConcluded ? '查看复盘' : '恢复会话'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* 选择官员 */}
         <div className="bg-[var(--panel)] rounded-xl p-4 border border-[var(--line)]">
@@ -694,7 +821,7 @@ function MessageBubble({
   msg,
   officials,
 }: {
-  msg: CourtMessage;
+  msg: CourtDiscussMessage;
   officials: Array<{ id: string; name: string; emoji: string }>;
 }) {
   const color = OFFICIAL_COLORS[msg.official_id || ''] || '#6a9eff';
@@ -757,7 +884,7 @@ function MessageBubble({
           )}
         </div>
         <div className="text-sm leading-relaxed">
-          {msg.content?.split(/(\*[^*]+\*)/).map((part, i) => {
+          {msg.content?.split(/(\*[^*]+\*)/).map((part: string, i: number) => {
             if (part.startsWith('*') && part.endsWith('*')) {
               return (
                 <span key={i} className="text-[var(--muted)] italic text-xs">

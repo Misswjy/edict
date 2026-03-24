@@ -102,19 +102,25 @@ def test_state_update():
     assert t['org'] == '门下省', f"org应为门下省: {t['org']}"
 
 
-# ── TEST 8: done 完成
+# ── TEST 8: done 先提审，再完成
 def test_done():
-    cmd_create('JJC-TEST-E2E-08', '测试任务完成状态标记功能', 'Zhongshu', '中书省', '中书令')
+    cmd_create('JJC-TEST-E2E-08', '测试任务完成状态标记功能', 'Doing', '工部', '工部尚书')
     cmd_done('JJC-TEST-E2E-08', '/tmp/output.md', '任务已完成')
     t = _get_task('JJC-TEST-E2E-08')
     assert t is not None
+    assert t['state'] == 'Review', f"执行完成后应先进入Review: {t['state']}"
+    assert t['org'] == '尚书省', f"Review阶段应由尚书省负责: {t['org']}"
+
+    cmd_done('JJC-TEST-E2E-08', '/tmp/output.md', '审查通过')
+    t = _get_task('JJC-TEST-E2E-08')
     assert t['state'] == 'Done', f"state应为Done: {t['state']}"
 
 
 # ── TEST 9: 已完成任务不可覆盖
 def test_done_not_overwritable():
-    cmd_create('JJC-TEST-E2E-09', '测试已完成任务不可覆盖保护', 'Zhongshu', '中书省', '中书令')
+    cmd_create('JJC-TEST-E2E-09', '测试已完成任务不可覆盖保护', 'Doing', '工部', '工部尚书')
     cmd_done('JJC-TEST-E2E-09', '/tmp/output.md', '任务已完成')
+    cmd_done('JJC-TEST-E2E-09', '/tmp/output.md', '审查通过')
     cmd_create('JJC-TEST-E2E-09', '试图覆盖已完成的任务标题', 'Zhongshu', '中书省', '中书令')
     t = _get_task('JJC-TEST-E2E-09')
     assert t is not None

@@ -2,7 +2,15 @@
 
 > 本文档详细阐述「三省六部」项目如何从**业务制度设计**到**代码实现细节**，完整处理复杂多Agent协作的任务分发与流转。这是一个**制度化的AI多Agent框架**，而非传统的自由讨论式协作系统。
 
+> 当前角色、状态、权限矩阵与 OpenClaw demo agent 列表的单一真相源为 [config/institution_schema.json](/Users/xingzhan/Documents/edict/config/institution_schema.json)，对应生成片段见 [docs/generated/institution-schema.md](/Users/xingzhan/Documents/edict/docs/generated/institution-schema.md)。
+
 **文档概览图**
+
+制度单一真相源：
+
+- 机器可读 schema：[`config/institution_schema.json`](/Users/xingzhan/Documents/edict/config/institution_schema.json)
+- 自动生成资产：[`docs/generated/institution-schema.md`](/Users/xingzhan/Documents/edict/docs/generated/institution-schema.md)
+- 生成脚本：[`scripts/generate_institution_assets.py`](/Users/xingzhan/Documents/edict/scripts/generate_institution_assets.py)
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -551,6 +559,7 @@ def can_dispatch_to(from_agent, to_agent):
    └─ 数据源：~/.openclaw/agents/{agent_id}/sessions/*.jsonl
    └─ 来自：OpenClaw框架自动记录，Agent无需主动操作
    └─ 周期：消息级别，粒度最细
+   └─ 默认以 `EDICT_ACTIVITY_SENSITIVITY=redacted` 脱敏展示；仅在可信环境下建议切到 `full`
 ```
 
 #### 问题诊断
@@ -687,8 +696,8 @@ tool_result 16   工具调用记录（bash运行结果、API调用结果）
 - 📋 看流转链了解任务在哪个阶段
 - 📝 看 progress 了解Agent实时说了什么
 - ✅ 看 todos 了解任务拆解和完成进度
-- 💭 看 assistant/thinking 了解Agent的思考过程
-- 🔧 看 tool_result 了解每次工具调用的结果
+- 💭 在 `full` 模式下看 assistant/thinking 了解Agent的思考过程
+- 🔧 在可信环境下查看 tool_result 的完整输出
 - 👤 看 user 了解是否有人工干预
 
 ---
@@ -873,6 +882,8 @@ T+720 (若仍未解决):
 ```
 
 #### 任务活动流：`GET /api/task-activity/{task_id}`
+
+> 默认返回会对 `thinking`、`output`、绝对路径等敏感字段做脱敏；仅在显式设置 `EDICT_ACTIVITY_SENSITIVITY=full` 时返回完整细节。
 
 ```
 请求：

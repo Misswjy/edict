@@ -14,6 +14,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..config import get_settings
+from ..security import redact_sensitive_data
 from ..services.event_bus import get_event_bus
 
 log = logging.getLogger("edict.ws")
@@ -41,7 +42,7 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         # 并发：监听 Redis Pub/Sub + 客户端消息
         await asyncio.gather(
-            _relay_events(pubsub, ws),
+            _relay_events(pubsub, ws, settings.activity_sensitivity),
             _handle_client_messages(ws),
         )
     except WebSocketDisconnect:
@@ -55,7 +56,7 @@ async def websocket_endpoint(ws: WebSocket):
         log.info(f"WebSocket cleaned up. Remaining: {len(_connections)}")
 
 
-async def _relay_events(pubsub, ws: WebSocket):
+async def _relay_events(pubsub, ws: WebSocket, sensitivity: str):
     """从 Redis Pub/Sub 接收事件，推送到 WebSocket。"""
     async for message in pubsub.listen():
         if message["type"] == "pmessage":
@@ -67,6 +68,7 @@ async def _relay_events(pubsub, ws: WebSocket):
 
             try:
                 event_data = json.loads(data) if isinstance(data, str) else data
+                event_data = redact_sensitive_data(event_data, sensitivity)
                 await ws.send_json({
                     "type": "event",
                     "topic": topic,
@@ -124,6 +126,7 @@ async def task_websocket(ws: WebSocket, task_id: str):
                     # 只转发与此任务相关的事件
                     if payload.get("task_id") == task_id:
                         topic = message["channel"].replace("edict:pubsub:", "")
+                        event_data = redact_sensitive_data(event_data, settings.activity_sensitivity)
                         await ws.send_json({
                             "type": "event",
                             "topic": topic,

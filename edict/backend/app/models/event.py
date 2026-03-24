@@ -18,7 +18,7 @@ class Event(Base):
     __tablename__ = "events"
 
     event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    trace_id = Column(String(32), nullable=False, index=True, comment="关联任务ID")
+    trace_id = Column(String(64), nullable=False, index=True, comment="关联任务ID")
     timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     # 事件分类

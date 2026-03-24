@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from .auth import require_control_plane_access
 from .tasks import get_task_service
 from ..task_contract import make_actor_context
 from ..services.task_service import TaskService
@@ -110,7 +111,7 @@ async def queue_metrics(svc: TaskService = Depends(get_task_service)):
     return await svc.get_queue_metrics()
 
 
-@router.post("/create-task")
+@router.post("/create-task", dependencies=[Depends(require_control_plane_access)])
 async def create_task(body: CreateTaskPayload, svc: TaskService = Depends(get_task_service)):
     task = await svc.create_task(
         title=body.title,
@@ -125,7 +126,7 @@ async def create_task(body: CreateTaskPayload, svc: TaskService = Depends(get_ta
     return {"ok": True, "taskId": task.id, "message": f"旨意 {task.id} 已下达，正在派发给司礼监"}
 
 
-@router.post("/task-action")
+@router.post("/task-action", dependencies=[Depends(require_control_plane_access)])
 async def task_action(body: TaskActionPayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.task_action(body.taskId, body.action, body.reason, actor=_actor(body))
@@ -135,7 +136,7 @@ async def task_action(body: TaskActionPayload, svc: TaskService = Depends(get_ta
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/review-action")
+@router.post("/review-action", dependencies=[Depends(require_control_plane_access)])
 async def review_action(body: ReviewPayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.review_task(body.taskId, body.action, body.comment, actor=_actor(body))
@@ -145,7 +146,7 @@ async def review_action(body: ReviewPayload, svc: TaskService = Depends(get_task
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/advance-state")
+@router.post("/advance-state", dependencies=[Depends(require_control_plane_access)])
 async def advance_state(body: AdvancePayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.advance_task(body.taskId, body.comment, actor=_actor(body))
@@ -155,7 +156,7 @@ async def advance_state(body: AdvancePayload, svc: TaskService = Depends(get_tas
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/task-consult")
+@router.post("/task-consult", dependencies=[Depends(require_control_plane_access)])
 async def task_consult(body: ConsultPayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.request_consultation(body.taskId, body.targetAgent, note=body.note, actor=_actor(body))
@@ -165,7 +166,7 @@ async def task_consult(body: ConsultPayload, svc: TaskService = Depends(get_task
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/archive-task")
+@router.post("/archive-task", dependencies=[Depends(require_control_plane_access)])
 async def archive_task(body: ArchivePayload, svc: TaskService = Depends(get_task_service)):
     try:
         if body.archiveAllDone:
@@ -175,7 +176,7 @@ async def archive_task(body: ArchivePayload, svc: TaskService = Depends(get_task
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/task-todos")
+@router.post("/task-todos", dependencies=[Depends(require_control_plane_access)])
 async def task_todos(body: TodoPayload, svc: TaskService = Depends(get_task_service)):
     try:
         await svc.update_todos(body.taskId, actor=_actor(body), todos=body.todos)
@@ -186,7 +187,7 @@ async def task_todos(body: TodoPayload, svc: TaskService = Depends(get_task_serv
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@router.post("/scheduler-scan")
+@router.post("/scheduler-scan", dependencies=[Depends(require_control_plane_access)])
 async def scheduler_scan(body: SchedulerScanPayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.scheduler_scan(body.thresholdSec, actor=_actor(body))
@@ -194,7 +195,7 @@ async def scheduler_scan(body: SchedulerScanPayload, svc: TaskService = Depends(
         raise HTTPException(status_code=403, detail=str(exc))
 
 
-@router.post("/scheduler-retry")
+@router.post("/scheduler-retry", dependencies=[Depends(require_control_plane_access)])
 async def scheduler_retry(body: SchedulerPayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.scheduler_retry(body.taskId, body.reason, actor=_actor(body))
@@ -204,7 +205,7 @@ async def scheduler_retry(body: SchedulerPayload, svc: TaskService = Depends(get
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/scheduler-escalate")
+@router.post("/scheduler-escalate", dependencies=[Depends(require_control_plane_access)])
 async def scheduler_escalate(body: SchedulerPayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.scheduler_escalate(body.taskId, body.reason, actor=_actor(body))
@@ -214,7 +215,7 @@ async def scheduler_escalate(body: SchedulerPayload, svc: TaskService = Depends(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/scheduler-rollback")
+@router.post("/scheduler-rollback", dependencies=[Depends(require_control_plane_access)])
 async def scheduler_rollback(body: SchedulerPayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.scheduler_rollback(body.taskId, body.reason, actor=_actor(body))
