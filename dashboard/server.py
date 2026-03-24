@@ -37,6 +37,7 @@ from app.task_contract import (
     STATE_LABELS,
     TERMINAL_STATES,
     VALID_TRANSITIONS,
+    authorize_consultation,
     authorize_agent_wake,
     authorize_dispatch,
     authorize_review,
@@ -45,12 +46,16 @@ from app.task_contract import (
     authorize_todos,
     authorize_transition,
     build_audit_entry,
+    build_consult_key,
     canonicalize_actor,
     canonicalize_state,
+    central_queue_owner,
     ensure_execution_assignment,
     ensure_task_shape,
+    fast_lane_ready,
     make_actor_context,
     next_manual_transition,
+    queue_sla_seconds,
     build_dispatch_key,
     resolve_dispatch_agent,
     resolve_execution_org,
@@ -210,8 +215,10 @@ def _should_proxy_control_plane(path):
         return False
     if path in {
         '/api/live-status',
+        '/api/queue-metrics',
         '/api/create-task',
         '/api/task-action',
+        '/api/task-consult',
         '/api/review-action',
         '/api/advance-state',
         '/api/archive-task',
@@ -255,6 +262,28 @@ def _bump_task_version(task):
     ensure_task_shape(task)
     task['_stateVersion'] = max(1, int(task.get('_stateVersion') or 1)) + 1
     return task['_stateVersion']
+
+
+def _maybe_fast_lane_transition(task):
+    ensure_task_shape(task)
+    if canonicalize_state(task.get('state')) != 'Assigned':
+        return False
+    if not fast_lane_ready(task):
+        return False
+    execution_org = resolve_execution_org(task)
+    task['state'] = 'Next'
+    task['org'] = execution_org
+    task['now'] = '⚡ 快车道：已自动进入执行队列'
+    task.setdefault('flow_log', []).append({
+        'at': now_iso(),
+        'from': '尚书省',
+        'to': execution_org,
+        'remark': '⚡ 快车道自动分流到执行队列',
+    })
+    _scheduler_mark_progress(task, f'快车道自动进入 {execution_org} 执行队列')
+    _bump_task_version(task)
+    task['updatedAt'] = now_iso()
+    return True
 
 
 def handle_task_action(task_id, action, reason, actor=None):
@@ -770,7 +799,7 @@ _JUNK_TITLES = {
 }
 
 
-def handle_create_task(title, org='中书省', official='中书令', priority='normal', template_id='', params=None, target_dept='', actor=None):
+def handle_create_task(title, org='中书省', official='中书令', priority='normal', lane='standard', template_id='', params=None, target_dept='', actor=None):
     """从看板创建新任务（圣旨模板下旨）。"""
     actor = actor or make_actor_context('emperor', source='dashboard')
     if not title or not title.strip():
@@ -811,6 +840,7 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
             'output': '',
             'ac': '',
             'priority': priority,
+            'lane': lane or 'standard',
             'templateId': template_id,
             'templateParams': params or {},
             'flow_log': [{
@@ -890,16 +920,26 @@ def _handle_review_action_update(task, action, comment, actor):
         'remark': transition['remark'],
     })
     _scheduler_mark_progress(task, f'审议动作 {action} -> {new_state}')
-    _bump_task_version(task)
+    fast_tracked = _maybe_fast_lane_transition(task)
+    if not fast_tracked:
+        _bump_task_version(task)
     task['updatedAt'] = now_iso()
-    _record_task_audit(task.get('id', ''), f'review.{action}', actor, True, from_state=current_state, to_state=new_state, payload={'comment': comment})
+    _record_task_audit(
+        task.get('id', ''),
+        f'review.{action}',
+        actor,
+        True,
+        from_state=current_state,
+        to_state=task.get('state', ''),
+        payload={'comment': comment},
+    )
 
     label = '已准奏' if action == 'approve' else '已驳回'
     dispatched = ' (已自动派发 Agent)' if new_state not in TERMINAL_STATES else ''
     return {
         'allowed': True,
         'message': f'{task.get("id", "")} {label}{dispatched}',
-        'dispatch_state': new_state if new_state not in TERMINAL_STATES else '',
+        'dispatch_state': task.get('state') if task.get('state') not in TERMINAL_STATES else '',
         'task': json.loads(json.dumps(task, ensure_ascii=False)),
     }
 
@@ -1197,6 +1237,9 @@ def _scheduler_snapshot(task, note=''):
 
 def _scheduler_mark_progress(task, note=''):
     sched = _ensure_scheduler(task)
+    recommended_sla = queue_sla_seconds(task, task.get('state'))
+    if recommended_sla:
+        sched['stallThresholdSec'] = recommended_sla
     sched['lastProgressAt'] = now_iso()
     sched['stallSince'] = None
     sched['retryCount'] = 0
@@ -1242,6 +1285,73 @@ def get_scheduler_state(task_id):
         'stalledSec': stalled_sec,
         'checkedAt': now_iso(),
     }
+
+
+def get_queue_metrics():
+    tasks = load_tasks()
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    queues = {
+        'menxia': {'owner': 'menxia', 'label': '门下省', 'states': ['Menxia'], 'waiting': 0, 'overdue': 0, 'fastLane': 0, 'oldestWaitSec': 0, 'tasks': []},
+        'shangshu': {'owner': 'shangshu', 'label': '尚书省', 'states': ['Assigned', 'Review'], 'waiting': 0, 'overdue': 0, 'fastLane': 0, 'oldestWaitSec': 0, 'tasks': []},
+    }
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        ensure_task_shape(task)
+        owner = central_queue_owner(task.get('state'))
+        if not owner or task.get('archived'):
+            continue
+        updated_at = _parse_iso(task.get('updatedAt')) or now_dt
+        wait_sec = max(0, int((now_dt - updated_at).total_seconds()))
+        sla_sec = queue_sla_seconds(task, task.get('state'))
+        item = {
+            'taskId': task.get('id', ''),
+            'state': task.get('state', ''),
+            'lane': task.get('lane', 'standard'),
+            'waitSec': wait_sec,
+            'slaSec': sla_sec,
+            'overdue': bool(sla_sec and wait_sec > sla_sec),
+        }
+        queue = queues[owner]
+        queue['waiting'] += 1
+        queue['oldestWaitSec'] = max(queue['oldestWaitSec'], wait_sec)
+        if item['lane'] == 'fast':
+            queue['fastLane'] += 1
+        if item['overdue']:
+            queue['overdue'] += 1
+        queue['tasks'].append(item)
+    return {'ok': True, 'queues': queues, 'checkedAt': now_iso()}
+
+
+def handle_task_consult(task_id, target_agent, note='', actor=None):
+    actor = actor or make_actor_context('system', source='dashboard')
+    result = _with_task(task_id, lambda task, _tasks: _handle_task_consult_update(task, target_agent, note, actor))
+    if result is None:
+        _record_task_audit(task_id, 'task.consult', actor, False, deny_reason='task not found', target_agent=target_agent, payload={'note': note})
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    if result.get('ok'):
+        wake_agent(target_agent, f'横向咨询，请保持主状态不变：{note or task_id}', actor=actor, task_id=task_id)
+    return result
+
+
+def _handle_task_consult_update(task, target_agent, note, actor):
+    ensure_task_shape(task)
+    allowed, deny_reason = authorize_consultation(actor, task, target_agent)
+    if not allowed:
+        _record_task_audit(task.get('id', ''), 'task.consult', actor, False, from_state=task.get('state', ''), deny_reason=deny_reason, target_agent=target_agent, payload={'note': note})
+        return {'ok': False, 'error': deny_reason}
+    consult_key = build_consult_key(task.get('id', ''), task.get('state', ''), int(task.get('_stateVersion') or 1), actor.actor_id, target_agent, actor.request_id)
+    task.setdefault('consultLog', []).append({
+        'at': now_iso(),
+        'from': actor.actor_id,
+        'to': target_agent,
+        'state': task.get('state', ''),
+        'note': note or '横向咨询',
+        'consultKey': consult_key,
+    })
+    task['updatedAt'] = now_iso()
+    _record_task_audit(task.get('id', ''), 'task.consult', actor, True, from_state=task.get('state', ''), to_state=task.get('state', ''), target_agent=target_agent, payload={'note': note})
+    return {'ok': True, 'message': f'{task.get("id", "")} 已向 {target_agent} 发起横向咨询', 'consultKey': consult_key}
 
 
 def handle_scheduler_retry(task_id, reason='', actor=None):
@@ -2409,9 +2519,19 @@ def _handle_advance_state_update(task, comment, actor):
         'remark': f'⬇️ 手动推进：{remark}',
     })
     _scheduler_mark_progress(task, f'手动推进 {current_state} -> {next_state}')
-    _bump_task_version(task)
+    fast_tracked = _maybe_fast_lane_transition(task)
+    if not fast_tracked:
+        _bump_task_version(task)
     task['updatedAt'] = now_iso()
-    _record_task_audit(task.get('id', ''), 'task.advance', actor, True, from_state=current_state, to_state=next_state, payload={'comment': comment})
+    _record_task_audit(
+        task.get('id', ''),
+        'task.advance',
+        actor,
+        True,
+        from_state=current_state,
+        to_state=task.get('state', ''),
+        payload={'comment': comment},
+    )
 
     from_label = _STATE_LABELS.get(current_state, current_state)
     to_label = _STATE_LABELS.get(next_state, next_state)
@@ -2419,7 +2539,7 @@ def _handle_advance_state_update(task, comment, actor):
     return {
         'allowed': True,
         'message': f'{task.get("id", "")} {from_label} → {to_label}{dispatched}',
-        'dispatch_state': next_state if next_state not in TERMINAL_STATES else '',
+        'dispatch_state': task.get('state') if task.get('state') not in TERMINAL_STATES else '',
         'task': json.loads(json.dumps(task, ensure_ascii=False)),
     }
 
@@ -2500,6 +2620,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'status': 'ok' if all_ok else 'degraded', 'ts': now_iso(), 'checks': checks})
         elif p == '/api/live-status':
             self.send_json(read_json(DATA / 'live_status.json'))
+        elif p == '/api/queue-metrics':
+            self.send_json(get_queue_metrics())
         elif p == '/api/agent-config':
             self.send_json(read_json(DATA / 'agent_config.json'))
         elif p == '/api/model-change-log':
@@ -2746,6 +2868,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(result)
             return
 
+        if p == '/api/task-consult':
+            task_id = body.get('taskId', '').strip()
+            target_agent = body.get('targetAgent', '').strip()
+            note = body.get('note', '').strip()
+            if not task_id or not target_agent:
+                self.send_json({'ok': False, 'error': 'taskId and targetAgent required'}, 400)
+                return
+            actor = _actor_from_request(self.headers, body)
+            result = handle_task_consult(task_id, target_agent, note, actor=actor)
+            self.send_json(result)
+            return
+
         if p == '/api/archive-task':
             task_id = body.get('taskId', '').strip() if body.get('taskId') else ''
             archived = body.get('archived', True)
@@ -2785,6 +2919,7 @@ class Handler(BaseHTTPRequestHandler):
             org = body.get('org', '中书省').strip()
             official = body.get('official', '中书令').strip()
             priority = body.get('priority', 'normal').strip()
+            lane = body.get('lane', 'standard').strip()
             template_id = body.get('templateId', '')
             params = body.get('params', {})
             if not title:
@@ -2792,7 +2927,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             target_dept = body.get('targetDept', '').strip()
             actor = _actor_from_request(self.headers, body)
-            result = handle_create_task(title, org, official, priority, template_id, params, target_dept, actor=actor)
+            result = handle_create_task(title, org, official, priority, lane, template_id, params, target_dept, actor=actor)
             self.send_json(result)
             return
 

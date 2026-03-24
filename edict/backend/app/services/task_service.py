@@ -15,6 +15,7 @@ from ..task_contract import (
     TERMINAL_STATES,
     ActorContext,
     TaskState,
+    authorize_consultation,
     authorize_dispatch,
     authorize_progress,
     authorize_review,
@@ -23,12 +24,18 @@ from ..task_contract import (
     authorize_todos,
     authorize_transition,
     build_audit_entry,
+    build_consult_key,
     build_dispatch_key,
+    canonicalize_lane,
     canonicalize_state,
+    central_queue_owner,
     ensure_execution_assignment,
     ensure_task_shape,
+    fast_lane_ready,
+    is_fast_lane,
     make_actor_context,
     next_manual_transition,
+    queue_sla_seconds,
     resolve_dispatch_agent,
     review_transition,
     validate_transition,
@@ -56,6 +63,7 @@ class TaskService:
         title: str,
         official: str = "中书令",
         priority: str = "normal",
+        lane: str = "standard",
         template_id: str = "",
         template_params: dict | None = None,
         target_dept: str = "",
@@ -74,6 +82,7 @@ class TaskService:
             state=initial_state,
             now="等待司礼监接旨分办",
             priority=priority,
+            lane=canonicalize_lane(lane),
             template_id=template_id,
             template_params=template_params or {},
             target_dept=target_dept or "",
@@ -87,6 +96,7 @@ class TaskService:
                 }
             ],
             progress_log=[],
+            consult_log=[],
             todos=[],
             scheduler=scheduler,
         )
@@ -166,6 +176,7 @@ class TaskService:
         await self.db.commit()
 
         await self._publish_state_event(task, actor, current_state, reason)
+        await self._maybe_fast_track_assigned(task)
         self._audit("task.transition", actor, True, task_id=task.id, from_state=current_state, to_state=new_state.value, payload={"reason": reason})
         return task
 
@@ -211,6 +222,82 @@ class TaskService:
             target_agent=target_agent,
             payload={"message": message},
         )
+
+    async def request_consultation(
+        self,
+        task_id: str,
+        target_agent: str,
+        note: str = "",
+        actor: ActorContext | None = None,
+    ) -> dict[str, Any]:
+        actor = actor or make_actor_context("system", source="edict-backend")
+        task = await self._get_task(task_id)
+        task_dict = task.to_dict()
+        allowed, deny_reason = authorize_consultation(actor, task_dict, target_agent)
+        if not allowed:
+            self._audit(
+                "task.consult",
+                actor,
+                False,
+                task_id=task.id,
+                from_state=task.state.value,
+                to_state=task.state.value,
+                target_agent=target_agent,
+                deny_reason=deny_reason,
+                payload={"note": note},
+            )
+            raise PermissionError(deny_reason)
+
+        consult_key = build_consult_key(
+            task.id,
+            task.state.value,
+            int(task.state_version or 1),
+            actor.actor_id,
+            target_agent,
+            actor.request_id,
+        )
+        consult_entry = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "from": actor.actor_id,
+            "to": target_agent,
+            "state": task.state.value,
+            "note": note or "横向咨询",
+            "consultKey": consult_key,
+        }
+        task_dict.setdefault("consultLog", []).append(consult_entry)
+        self._apply_task_dict(task, task_dict)
+        task.updated_at = datetime.now(timezone.utc)
+        await self.db.commit()
+
+        await self.bus.publish(
+            topic=TOPIC_TASK_DISPATCH,
+            trace_id=task.id,
+            event_type="task.consult.request",
+            producer=actor.actor_id,
+            payload={
+                "task_id": task.id,
+                "agent": target_agent,
+                "message": f"横向咨询，请保持任务主状态不变：{note or task.title}",
+                "state": task.state.value,
+                "dispatch_key": consult_key,
+                "version": int(task.state_version or 1),
+                "task": task.to_dict(),
+                "consult": True,
+            },
+            meta=self._event_meta(actor, task, {"dispatch_key": consult_key, "consult": True}),
+            dedupe_key=consult_key,
+        )
+        self._audit(
+            "task.consult",
+            actor,
+            True,
+            task_id=task.id,
+            from_state=task.state.value,
+            to_state=task.state.value,
+            target_agent=target_agent,
+            payload={"note": note},
+        )
+        return {"ok": True, "message": f"{task.id} 已向 {target_agent} 发起横向咨询", "consultKey": consult_key}
 
     async def add_progress(self, task_id: str, actor: ActorContext | None, content: str) -> Task:
         actor = actor or make_actor_context("system", source="edict-backend")
@@ -384,6 +471,7 @@ class TaskService:
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
         await self._publish_state_event(task, actor, current_state, comment)
+        await self._maybe_fast_track_assigned(task)
         self._audit(f"review.{action}", actor, True, task_id=task.id, from_state=current_state, to_state=task.state.value, payload={"comment": comment})
         return {"ok": True, "message": f"{task.id} {'已准奏' if action == 'approve' else '已驳回'}"}
 
@@ -421,6 +509,7 @@ class TaskService:
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
         await self._publish_state_event(task, actor, current_state, remark)
+        await self._maybe_fast_track_assigned(task)
         self._audit("task.advance", actor, True, task_id=task.id, from_state=current_state, to_state=next_state, payload={"comment": comment})
         return {"ok": True, "message": f"{task.id} 已推进到 {next_state}"}
 
@@ -472,14 +561,68 @@ class TaskService:
                     "text": entry.get("text"),
                 }
             )
+        for entry in task_dict.get("consultLog", []):
+            activity.append(
+                {
+                    "kind": "consult",
+                    "at": entry.get("at"),
+                    "from": entry.get("from"),
+                    "to": entry.get("to"),
+                    "remark": entry.get("note"),
+                    "agent": entry.get("to"),
+                }
+            )
         activity.sort(key=lambda item: str(item.get("at") or ""))
-        related_agents = sorted({entry.get("agent") for entry in task_dict.get("progress_log", []) if entry.get("agent")})
+        related_agents = sorted(
+            {
+                *(entry.get("agent") for entry in task_dict.get("progress_log", []) if entry.get("agent")),
+                *(entry.get("to") for entry in task_dict.get("consultLog", []) if entry.get("to")),
+            }
+        )
         return {
             "ok": True,
             "taskId": task_id,
             "activity": activity,
             "relatedAgents": related_agents,
             "lastActive": task_dict.get("updatedAt"),
+        }
+
+    async def get_queue_metrics(self) -> dict[str, Any]:
+        tasks = await self.list_tasks(limit=500)
+        now_dt = datetime.now(timezone.utc)
+        queues: dict[str, dict[str, Any]] = {
+            "menxia": {"owner": "menxia", "label": "门下省", "states": [TaskState.Menxia.value], "waiting": 0, "overdue": 0, "fastLane": 0, "oldestWaitSec": 0, "tasks": []},
+            "shangshu": {"owner": "shangshu", "label": "尚书省", "states": [TaskState.Assigned.value, TaskState.Review.value], "waiting": 0, "overdue": 0, "fastLane": 0, "oldestWaitSec": 0, "tasks": []},
+        }
+        for task in tasks:
+            task_dict = task.to_dict()
+            owner = central_queue_owner(task.state.value)
+            if not owner or task.archived:
+                continue
+            wait_from = self._parse_iso(task_dict.get("updatedAt")) or now_dt
+            wait_sec = max(0, int((now_dt - wait_from).total_seconds()))
+            sla_sec = queue_sla_seconds(task_dict, task.state.value)
+            item = {
+                "taskId": task.id,
+                "state": task.state.value,
+                "lane": task_dict.get("lane", "standard"),
+                "waitSec": wait_sec,
+                "slaSec": sla_sec,
+                "overdue": bool(sla_sec and wait_sec > sla_sec),
+            }
+            queue = queues[owner]
+            queue["waiting"] += 1
+            queue["oldestWaitSec"] = max(queue["oldestWaitSec"], wait_sec)
+            if item["overdue"]:
+                queue["overdue"] += 1
+            if item["lane"] == "fast":
+                queue["fastLane"] += 1
+            queue["tasks"].append(item)
+
+        return {
+            "ok": True,
+            "queues": queues,
+            "checkedAt": now_dt.isoformat(),
         }
 
     async def get_scheduler_state(self, task_id: str) -> dict[str, Any]:
@@ -669,12 +812,14 @@ class TaskService:
 
     async def get_live_status(self) -> dict[str, Any]:
         tasks = await self.list_tasks(limit=200)
+        queue_metrics = await self.get_queue_metrics()
         return {
             "tasks": [task.to_dict() for task in tasks],
             "syncStatus": {
                 "ok": True,
                 "engine": "edict-backend",
                 "controlPlane": "fastapi",
+                "queueMetrics": queue_metrics.get("queues", {}),
                 "updatedAt": datetime.now(timezone.utc).isoformat(),
             },
         }
@@ -760,6 +905,20 @@ class TaskService:
             },
         }
 
+    async def _maybe_fast_track_assigned(self, task: Task) -> None:
+        task_dict = task.to_dict()
+        if canonicalize_state(task.state.value) != TaskState.Assigned.value:
+            return
+        if not fast_lane_ready(task_dict):
+            return
+        actor = make_actor_context("system", source="fast-lane")
+        await self.transition_state(
+            task.id,
+            TaskState.Next,
+            actor=actor,
+            reason="快车道任务已具备执行部门，自动进入执行队列",
+        )
+
     def _ensure_scheduler(self, task_dict: dict[str, Any]) -> dict[str, Any]:
         ensure_task_shape(task_dict)
         sched = task_dict.setdefault("_scheduler", {})
@@ -767,7 +926,8 @@ class TaskService:
             sched = {}
             task_dict["_scheduler"] = sched
         sched.setdefault("enabled", True)
-        sched.setdefault("stallThresholdSec", 600)
+        default_sla = queue_sla_seconds(task_dict, task_dict.get("state"))
+        sched.setdefault("stallThresholdSec", default_sla or 600)
         sched.setdefault("maxRetry", 2)
         sched.setdefault("retryCount", 0)
         sched.setdefault("escalationLevel", 0)
@@ -809,6 +969,9 @@ class TaskService:
 
     def _scheduler_mark_progress(self, task_dict: dict[str, Any], note: str = "") -> None:
         sched = self._ensure_scheduler(task_dict)
+        recommended_sla = queue_sla_seconds(task_dict, task_dict.get("state"))
+        if recommended_sla:
+            sched["stallThresholdSec"] = recommended_sla
         sched["lastProgressAt"] = datetime.now(timezone.utc).isoformat()
         sched["stallSince"] = None
         sched["retryCount"] = 0
@@ -859,11 +1022,13 @@ class TaskService:
         task.output = normalized.get("output", task.output)
         task.ac = normalized.get("ac", task.ac)
         task.priority = normalized.get("priority", task.priority)
+        task.lane = canonicalize_lane(normalized.get("lane") or task.lane or "standard")
         task.review_round = int(normalized.get("review_round") or task.review_round or 0)
         task.state_version = int(normalized.get("_stateVersion") or task.state_version or 1)
         task.archived = bool(normalized.get("archived", task.archived))
         task.flow_log = normalized.get("flow_log", task.flow_log)
         task.progress_log = normalized.get("progress_log", task.progress_log)
+        task.consult_log = normalized.get("consultLog", task.consult_log)
         task.todos = normalized.get("todos", task.todos)
         task.template_id = normalized.get("templateId", task.template_id)
         task.template_params = normalized.get("templateParams", task.template_params)

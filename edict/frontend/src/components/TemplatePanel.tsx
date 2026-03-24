@@ -69,6 +69,7 @@ export default function TemplatePanel() {
       const r = await api.createTask({
         title: cmd.substring(0, 120),
         org: '中书省',
+        lane: formTpl.depts.length === 1 ? 'fast' : 'standard',
         targetDept: formTpl.depts[0] || '',
         priority: 'normal',
         templateId: formTpl.id,

@@ -25,6 +25,7 @@ class CreateTaskPayload(ActorPayload):
     org: str = "中书省"
     official: str = "中书令"
     priority: str = "normal"
+    lane: str = "standard"
     templateId: str = ""
     params: dict = Field(default_factory=dict)
     targetDept: str = ""
@@ -67,6 +68,12 @@ class SchedulerScanPayload(ActorPayload):
     thresholdSec: int = 180
 
 
+class ConsultPayload(ActorPayload):
+    taskId: str
+    targetAgent: str
+    note: str = ""
+
+
 def _actor(payload: ActorPayload):
     return make_actor_context(
         payload.actor,
@@ -98,12 +105,18 @@ async def scheduler_state(task_id: str, svc: TaskService = Depends(get_task_serv
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/queue-metrics")
+async def queue_metrics(svc: TaskService = Depends(get_task_service)):
+    return await svc.get_queue_metrics()
+
+
 @router.post("/create-task")
 async def create_task(body: CreateTaskPayload, svc: TaskService = Depends(get_task_service)):
     task = await svc.create_task(
         title=body.title,
         official=body.official,
         priority=body.priority,
+        lane=body.lane,
         template_id=body.templateId,
         template_params=body.params,
         target_dept=body.targetDept,
@@ -136,6 +149,16 @@ async def review_action(body: ReviewPayload, svc: TaskService = Depends(get_task
 async def advance_state(body: AdvancePayload, svc: TaskService = Depends(get_task_service)):
     try:
         return await svc.advance_task(body.taskId, body.comment, actor=_actor(body))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/task-consult")
+async def task_consult(body: ConsultPayload, svc: TaskService = Depends(get_task_service)):
+    try:
+        return await svc.request_consultation(body.taskId, body.targetAgent, note=body.note, actor=_actor(body))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:

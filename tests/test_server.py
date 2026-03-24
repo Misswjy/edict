@@ -34,6 +34,13 @@ def _read_tasks(data_dir):
     return json.loads((data_dir / 'tasks_source.json').read_text())
 
 
+def _read_audit(data_dir):
+    audit_path = data_dir / 'task_audit_log.json'
+    if not audit_path.exists():
+        return []
+    return json.loads(audit_path.read_text())
+
+
 def test_healthz(tmp_path, monkeypatch):
     """GET /healthz returns 200 with status ok."""
     srv, data_dir = _configure_server(tmp_path, monkeypatch)
@@ -135,6 +142,31 @@ def test_review_reject_from_review_returns_to_doing(tmp_path, monkeypatch):
     assert task['org'] == '工部'
 
 
+def test_fast_lane_review_approve_auto_moves_into_next(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    task = {
+        'id': 'JJC-TEST-FAST-001',
+        'title': '快车道任务',
+        'state': 'Menxia',
+        'org': '门下省',
+        'lane': 'fast',
+        'targetDept': '工部',
+        'flow_log': [],
+        'updatedAt': '2026-03-24T00:00:00+00:00',
+    }
+    (data_dir / 'tasks_source.json').write_text(json.dumps([task], ensure_ascii=False))
+
+    result = srv.handle_review_action('JJC-TEST-FAST-001', 'approve', '快车道准奏', actor=srv.make_actor_context('menxia', source='test'))
+    assert result['ok'] is True
+
+    [task] = _read_tasks(data_dir)
+    assert task['state'] == 'Next'
+    assert task['org'] == '工部'
+    assert any('快车道' in entry.get('remark', '') for entry in task['flow_log'])
+    audit_entries = _read_audit(data_dir)
+    assert any(entry['action'] == 'review.approve' and entry['to_state'] == 'Next' for entry in audit_entries)
+
+
 def test_cancelled_cannot_resume(tmp_path, monkeypatch):
     srv, data_dir = _configure_server(tmp_path, monkeypatch)
     task = {
@@ -187,3 +219,55 @@ def test_scheduler_update_does_not_clobber_manual_state_change(tmp_path, monkeyp
     assert task['state'] == 'Doing'
     assert task['org'] == '工部'
     assert task['_scheduler']['marker'] == 'test'
+
+
+def test_queue_metrics_reports_central_backlog_and_fast_lane(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    tasks = [
+        {
+            'id': 'JJC-QUEUE-001',
+            'title': '门下审议',
+            'state': 'Menxia',
+            'org': '门下省',
+            'lane': 'fast',
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+        },
+        {
+            'id': 'JJC-QUEUE-002',
+            'title': '尚书派发',
+            'state': 'Assigned',
+            'org': '尚书省',
+            'lane': 'standard',
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+        },
+    ]
+    (data_dir / 'tasks_source.json').write_text(json.dumps(tasks, ensure_ascii=False))
+
+    metrics = srv.get_queue_metrics()
+    assert metrics['ok'] is True
+    assert metrics['queues']['menxia']['waiting'] == 1
+    assert metrics['queues']['menxia']['fastLane'] == 1
+    assert metrics['queues']['shangshu']['waiting'] == 1
+
+
+def test_task_consult_preserves_state_and_logs_consultation(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    task = {
+        'id': 'JJC-CONSULT-001',
+        'title': '横向咨询',
+        'state': 'Assigned',
+        'org': '尚书省',
+        'lane': 'standard',
+        'targetDept': '工部',
+        'flow_log': [],
+        'updatedAt': '2026-03-24T00:00:00+00:00',
+    }
+    (data_dir / 'tasks_source.json').write_text(json.dumps([task], ensure_ascii=False))
+
+    result = srv.handle_task_consult('JJC-CONSULT-001', 'gongbu', '请评估执行复杂度', actor=srv.make_actor_context('shangshu', source='test'))
+    assert result['ok'] is True
+
+    [task] = _read_tasks(data_dir)
+    assert task['state'] == 'Assigned'
+    assert task['org'] == '尚书省'
+    assert task['consultLog'][0]['to'] == 'gongbu'

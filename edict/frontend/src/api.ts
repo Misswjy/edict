@@ -178,6 +178,7 @@ export interface Task {
   archivedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+  lane?: 'standard' | 'fast';
   targetDept?: string;
   templateId?: string;
   templateParams?: Record<string, unknown>;
@@ -416,6 +417,7 @@ export interface ScanAction {
 export interface CreateTaskPayload {
   title: string;
   org: string;
+  lane?: 'standard' | 'fast';
   targetDept?: string;
   priority?: string;
   templateId?: string;

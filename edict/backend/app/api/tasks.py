@@ -29,6 +29,7 @@ class TaskCreate(ActorPayload):
     title: str
     official: str = "中书令"
     priority: str = "normal"
+    lane: str = "standard"
     templateId: str = ""
     templateParams: dict = Field(default_factory=dict)
     targetDept: str = ""
@@ -42,6 +43,11 @@ class TaskTransition(ActorPayload):
 class TaskDispatch(ActorPayload):
     target_agent: str
     message: str = ""
+
+
+class TaskConsult(ActorPayload):
+    target_agent: str
+    note: str = ""
 
 
 class TaskProgress(ActorPayload):
@@ -103,12 +109,18 @@ async def task_stats(svc: TaskService = Depends(get_task_service)):
     return {"total": sum(stats.values()), "by_state": stats}
 
 
+@router.get("/queue-metrics")
+async def queue_metrics(svc: TaskService = Depends(get_task_service)):
+    return await svc.get_queue_metrics()
+
+
 @router.post("", status_code=201)
 async def create_task(body: TaskCreate, svc: TaskService = Depends(get_task_service)):
     task = await svc.create_task(
         title=body.title,
         official=body.official,
         priority=body.priority,
+        lane=body.lane,
         template_id=body.templateId,
         template_params=body.templateParams,
         target_dept=body.targetDept,
@@ -147,6 +159,16 @@ async def dispatch_task(task_id: str, body: TaskDispatch, svc: TaskService = Dep
     try:
         await svc.request_dispatch(task_id, body.target_agent, actor=_actor(body), message=body.message)
         return {"message": "dispatch requested", "agent": body.target_agent}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/{task_id}/consult")
+async def consult_task(task_id: str, body: TaskConsult, svc: TaskService = Depends(get_task_service)):
+    try:
+        return await svc.request_consultation(task_id, body.target_agent, note=body.note, actor=_actor(body))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
