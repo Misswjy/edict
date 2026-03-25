@@ -18,6 +18,8 @@
 | 审计真相源 | 任务动作审计落 PostgreSQL `task_audits`，同时保留应用日志镜像便于排障 |
 | 模型变更历史 | `/api/model-change-log` 优先投影 `task_audits(action=config.set_model)`；legacy `data/model_change_log.json` 只作为迁移导入源 |
 | 晨报控制面 | `/api/morning-*` 优先投影 `task_audits(action=morning.*.snapshot)`；legacy `data/morning_*.json` 仅作为兼容 shadow 与采集脚本输入 |
+| 朝堂议政会话 | `/api/court-discuss/*` 优先投影 `task_audits(action=court_discuss.*)`；legacy `data/court_discuss_sessions.json` 仅保留兼容 shadow 与历史导入源 |
+| 权限边界 | HTTP control plane 鉴权只决定“能否调用接口”；任务流转权限仍必须通过 `authorize_*`，并保留 `actor/source/request_id/signature` 上下文进入审计 |
 
 这意味着：
 

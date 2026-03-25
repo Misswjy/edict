@@ -28,6 +28,11 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.task_contract import TaskState, canonicalize_lane, canonicalize_state, ensure_task_shape
+from app.services.court_discuss_service import (
+    COURT_DISCUSS_SNAPSHOT_ACTION,
+    normalize_session,
+    serialize_session,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 log = logging.getLogger("migrate")
@@ -106,10 +111,83 @@ def parse_old_task(old: dict) -> dict:
     }
 
 
+def parse_legacy_model_change(entry: dict) -> dict[str, object] | None:
+    raw = dict(entry or {})
+    agent_id = str(raw.get("agentId") or "").strip()
+    old_model = str(raw.get("oldModel") or "").strip()
+    new_model = str(raw.get("newModel") or "").strip()
+    if not agent_id or (not old_model and not new_model):
+        return None
+
+    changed_at = parse_legacy_datetime(raw.get("at"))
+    rolled_back = bool(raw.get("rolledBack"))
+    stable_key = f"legacy-model-change:{changed_at.isoformat()}:{agent_id}:{old_model}:{new_model}:{int(rolled_back)}"
+    request_id = f"legacy-model:{agent_id}:{changed_at.strftime('%Y%m%d%H%M%S')}"[:64]
+    return {
+        "audit_id": uuid.uuid5(uuid.NAMESPACE_URL, stable_key),
+        "ts": changed_at,
+        "request_id": request_id,
+        "task_id": "",
+        "action": "config.set_model",
+        "actor_id": "migration",
+        "actor_type": "system",
+        "source": "legacy-import",
+        "signature_verified": False,
+        "from_state": "",
+        "to_state": "",
+        "target_agent": agent_id,
+        "allowed": not rolled_back,
+        "deny_reason": "gateway restart failed" if rolled_back else "",
+        "policy_version": "legacy-import",
+        "payload": {
+            "oldModel": old_model,
+            "newModel": new_model,
+            "rolledBack": rolled_back,
+            "importedFrom": "data/model_change_log.json",
+        },
+        "payload_hash": "",
+        "payload_summary": f"{agent_id}: {old_model} -> {new_model}",
+    }
+
+
+def parse_legacy_court_session(entry: dict) -> dict[str, object] | None:
+    normalized = normalize_session(entry)
+    if not normalized:
+        return None
+
+    session_id = str(normalized["session_id"])
+    updated_at = parse_legacy_datetime(str(normalized.get("updated_at") or ""))
+    stable_key = f"legacy-court-session:{session_id}:{updated_at.isoformat()}:{normalized.get('phase')}:{normalized.get('round')}"
+    return {
+        "audit_id": uuid.uuid5(uuid.NAMESPACE_URL, stable_key),
+        "ts": updated_at,
+        "request_id": f"legacy-court:{session_id}"[:64],
+        "task_id": str(normalized.get("task_id") or ""),
+        "action": COURT_DISCUSS_SNAPSHOT_ACTION,
+        "actor_id": "migration",
+        "actor_type": "system",
+        "source": "legacy-import",
+        "signature_verified": False,
+        "from_state": "",
+        "to_state": "",
+        "target_agent": "",
+        "allowed": True,
+        "deny_reason": "",
+        "policy_version": "legacy-import",
+        "payload": {
+            "event": "legacy-import",
+            "session": serialize_session(normalized),
+        },
+        "payload_hash": "",
+        "payload_summary": f"court session {session_id}",
+    }
+
+
 async def migrate(file_path: Path, dry_run: bool = False):
     """执行迁移。"""
     from app.db import async_session
     from app.models.task import Task
+    from app.models.task_audit import TaskAudit
 
     if not file_path.exists():
         log.error(f"数据文件不存在: {file_path}")
@@ -138,6 +216,13 @@ async def migrate(file_path: Path, dry_run: bool = False):
         for old in old_tasks:
             params = parse_old_task(old)
             log.info(f"  [{params['id']}] {params['title'][:40]} → {params['state'].value}")
+        model_log_path = file_path.parent / "model_change_log.json"
+        if model_log_path.exists():
+            try:
+                model_entries = json.loads(model_log_path.read_text(encoding="utf-8"))
+            except Exception:
+                model_entries = []
+            log.info(f"Dry run 检测到 {len(model_entries) if isinstance(model_entries, list) else 0} 条模型变更历史待导入")
         log.info(f"Dry run 完成: {stats['total']} 个任务待迁移")
         return
 
@@ -160,6 +245,52 @@ async def migrate(file_path: Path, dry_run: bool = False):
             except Exception as e:
                 log.error(f"❌ 迁移失败: {old.get('id', '?')}: {e}")
                 stats["errors"] += 1
+
+        model_log_path = file_path.parent / "model_change_log.json"
+        if model_log_path.exists():
+            try:
+                model_entries = json.loads(model_log_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                log.error(f"❌ 读取模型变更历史失败: {exc}")
+                model_entries = []
+            if isinstance(model_entries, list):
+                imported_model_changes = 0
+                skipped_model_changes = 0
+                for entry in model_entries:
+                    params = parse_legacy_model_change(entry)
+                    if not params:
+                        skipped_model_changes += 1
+                        continue
+                    existing = await db.get(TaskAudit, params["audit_id"])
+                    if existing:
+                        skipped_model_changes += 1
+                        continue
+                    db.add(TaskAudit(**params))
+                    imported_model_changes += 1
+                log.info("模型变更历史导入: 成功 %s, 跳过 %s", imported_model_changes, skipped_model_changes)
+
+        court_sessions_path = file_path.parent / "court_discuss_sessions.json"
+        if court_sessions_path.exists():
+            try:
+                court_sessions = json.loads(court_sessions_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                log.error(f"❌ 读取朝堂议政历史失败: {exc}")
+                court_sessions = {}
+            imported_court_sessions = 0
+            skipped_court_sessions = 0
+            if isinstance(court_sessions, dict):
+                for item in court_sessions.values():
+                    params = parse_legacy_court_session(item)
+                    if not params:
+                        skipped_court_sessions += 1
+                        continue
+                    existing = await db.get(TaskAudit, params["audit_id"])
+                    if existing:
+                        skipped_court_sessions += 1
+                        continue
+                    db.add(TaskAudit(**params))
+                    imported_court_sessions += 1
+            log.info("朝堂议政历史导入: 成功 %s, 跳过 %s", imported_court_sessions, skipped_court_sessions)
 
         await db.commit()
 

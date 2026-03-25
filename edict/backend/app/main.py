@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .services.event_bus import get_event_bus
-from .api import tasks, agents, events, admin, websocket, dashboard
+from .api import tasks, agents, events, admin, websocket, dashboard, models as model_api, skills, morning, officials, admin_actions, court_discuss
 from .api import legacy
 
 logging.basicConfig(
@@ -69,6 +69,13 @@ app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(events.router, prefix="/api/events", tags=["events"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 app.include_router(dashboard.router, prefix="/api", tags=["dashboard-compat"])
+app.include_router(agents.compat_router, prefix="/api", tags=["agents-compat"])
+app.include_router(model_api.router, prefix="/api", tags=["models-compat"])
+app.include_router(skills.router, prefix="/api", tags=["skills-compat"])
+app.include_router(morning.router, prefix="/api", tags=["morning-compat"])
+app.include_router(officials.router, prefix="/api", tags=["officials-compat"])
+app.include_router(admin_actions.router, prefix="/api", tags=["admin-actions-compat"])
+app.include_router(court_discuss.router, prefix="/api", tags=["court-discuss-compat"])
 app.include_router(websocket.router, tags=["websocket"])
 app.include_router(legacy.router, prefix="/api/tasks", tags=["legacy"])
 

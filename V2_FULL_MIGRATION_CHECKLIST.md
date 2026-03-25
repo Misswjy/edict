@@ -417,8 +417,8 @@
 
 #### P1-7. 迁移朝堂议政功能
 
-- [ ] 将 `court_discuss` 的会话存储迁入 Postgres 或至少抽象为 v2 service
-- [ ] 完成以下端点迁移：
+- [x] 已完成✅ 将 `court_discuss` 的会话存储迁入 Postgres durable audit 快照，并保留兼容 shadow 文件用于回退/恢复
+- [x] 已完成✅ 完成以下端点迁移：
   - `/api/court-discuss/start`
   - `/api/court-discuss/list`
   - `/api/court-discuss/session/{id}`
@@ -442,15 +442,23 @@
 
 - 若朝堂议政仍写 JSON，本次迁移仍存在一条绕过 v2 的业务链路
 
+落地结果：
+
+- `edict/backend/app/services/court_discuss_service.py` 已接管会话创建、推进、散朝、销毁、历史查询与命运骰子
+- `edict/backend/app/api/court_discuss.py` 已提供完整兼容路由，`edict/backend/app/main.py` 已完成挂载
+- 会话主真相源改为 durable audit `task_audits(action in court_discuss.*)`；`data/court_discuss_sessions.json` 仅保留兼容 shadow / 无数据库回退
+- `edict/migration/migrate_json_to_pg.py` 已补充 legacy `court_discuss_sessions.json` → audit snapshot 导入
+- 已通过 `tests/test_v2_court_discuss.py`、相关 Python 回归以及 `npm --prefix edict/frontend run build`
+
 ---
 
 ### 9. 任务流转与权限校验一致性
 
 #### P1-8. 用共享契约驱动所有状态跃迁
 
-- [ ] 确保所有状态推进都经过 `task_contract.py`
-- [ ] 删除任何绕过 `validate_transition()` 的隐藏状态改写
-- [ ] 保持快车道、审议驳回、手工推进与 legacy 行为一致
+- [x] 已完成✅ 确保所有状态推进都经过 `task_contract.py` 的共享跃迁/审议/分派契约
+- [x] 已完成✅ 已清理运行主链中的隐藏状态分叉，关键路径统一回归共享 helper 与契约测试
+- [x] 已完成✅ 快车道、审议驳回、手工推进与 legacy 行为一致，并通过 fixture 回归验证
 
 涉及文件：
 
@@ -467,11 +475,17 @@
 
 - `Blocked -> 恢复`、`Review -> Doing`、`Assigned -> Next` 是最容易产生行为漂移的节点
 
+落地结果：
+
+- `tests/test_architecture_contracts.py` 已覆盖 manual advance、review approve/reject、dispatch 幂等、权限矩阵等共享契约回归
+- legacy `dashboard/legacy_tasks.py` / `dashboard/legacy_scheduler.py` 与 v2 `TaskService` 共同依赖 `task_contract.py` 的 `next_manual_transition()`、`review_transition()`、`authorize_*` 系列函数
+- 已通过 legacy 主链回归、v2 回归和架构契约回归，确认 `Blocked -> resume`、`Review -> Doing`、`Assigned -> Next` 等关键节点结果一致
+
 #### P1-9. 权限矩阵运行时一致
 
-- [ ] 统一 Agent 权限判断仅通过 `authorize_*` 系列函数
-- [ ] 保留 actor / source / request_id / signature 语义
-- [ ] 明确 dashboard 用户、scheduler、system、agent 的权限边界
+- [x] 已完成✅ 统一 Agent 权限判断仅通过 `authorize_*` 系列函数
+- [x] 已完成✅ 保留 actor / source / request_id / signature 语义，并补充回归测试
+- [x] 已完成✅ 明确 dashboard 用户、scheduler、system、agent 的权限边界
 
 涉及文件：
 
@@ -487,6 +501,12 @@
 风险点：
 
 - control plane 的 HTTP 鉴权和任务 actor 鉴权不是一回事，不能混为一层
+
+落地结果：
+
+- 已通过代码扫描确认 legacy/v2 运行主链的审批、咨询、调度、唤醒、手工控制均调用 `authorize_*` 系列函数
+- `tests/test_task_contract.py` 已补充 `actor/source/request_id/signature` 语义回归，确保 durable audit 里保留请求上下文
+- `tests/test_security_defaults.py` + `tests/test_architecture_contracts.py` 已覆盖 control plane token/loopback 边界与 actor allow/deny 契约
 
 ---
 

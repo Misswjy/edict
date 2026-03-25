@@ -133,6 +133,8 @@ export const api = {
     postJ<CourtDiscussSessionData>(`${API_BASE}/api/court-discuss/start`, { topic, officials, taskId }),
   courtDiscussList: () =>
     fetchJ<{ ok: boolean; sessions: CourtDiscussSessionSummary[] }>(`${API_BASE}/api/court-discuss/list`),
+  courtDiscussOfficials: () =>
+    fetchJ<CourtDiscussOfficialsResult>(`${API_BASE}/api/court-discuss/officials`),
   courtDiscussSession: (sessionId: string) =>
     fetchJ<CourtDiscussSessionData>(`${API_BASE}/api/court-discuss/session/${encodeURIComponent(sessionId)}`),
   courtDiscussAdvance: (sessionId: string, userMessage?: string, decree?: string) =>
@@ -517,6 +519,11 @@ export interface CourtDiscussSessionSummary {
   summary?: string;
   created_at?: number;
   updated_at?: number;
+}
+
+export interface CourtDiscussOfficialsResult {
+  ok: boolean;
+  officials: Record<string, CourtDiscussOfficial>;
 }
 
 export interface CourtDiscussResult {

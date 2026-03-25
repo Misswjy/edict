@@ -1,5 +1,7 @@
 """tests for shared task contract p1 extensions"""
 
+import hashlib
+import hmac
 from datetime import datetime, timezone
 
 from edict.backend.app.task_contract import (
@@ -84,3 +86,33 @@ def test_build_audit_entry_keeps_full_payload_for_durable_storage():
     assert entry["payload"] == {"todo_count": 3, "source_of_truth": "tasks.todos"}
     assert entry["payload_hash"]
     assert "tasks.todos" in entry["payload_summary"]
+
+
+def test_actor_context_preserves_request_metadata_and_signature(monkeypatch):
+    monkeypatch.setenv("EDICT_ACTOR_SHARED_SECRET", "shared-secret")
+    request_id = "req-contract-001"
+    timestamp = "2026-03-25T10:00:00+00:00"
+    payload = f"shangshu|dashboard|{request_id}|{timestamp}".encode("utf-8")
+    signature = hmac.new(b"shared-secret", payload, hashlib.sha256).hexdigest()
+
+    actor = make_actor_context(
+        "shangshu",
+        source="dashboard",
+        request_id=request_id,
+        signature=signature,
+        timestamp=timestamp,
+    )
+    entry = build_audit_entry(
+        task_id="JJC-TEST-AUDIT-2",
+        action="task.dispatch",
+        actor=actor,
+        allowed=True,
+        payload={"reason": "contract"},
+    )
+
+    assert actor.request_id == request_id
+    assert actor.source == "dashboard"
+    assert actor.signature_verified is True
+    assert entry["request_id"] == request_id
+    assert entry["source"] == "dashboard"
+    assert entry["signature_verified"] is True
