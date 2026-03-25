@@ -14,7 +14,9 @@ Defaults are non-destructive:
 - `ops/restore/restore_all.sh`: restore snapshots from a backup directory.
 - `ops/cutover/cutover_to_v2.sh`: freeze legacy writes, switch frontend API target, and enable v2 scheduler/worker chain.
 - `ops/cutover/rollback_to_legacy.sh`: freeze v2 writes, restore data snapshot, and switch traffic back to legacy runtime.
-- `ops/cutover/reinject_tasks_placeholder.sh`: rollback-window data reinjection placeholder workflow.
+- `ops/cutover/export_v2_delta.py`: export rollback-window delta from v2 task/audit snapshots.
+- `ops/cutover/merge_delta_into_legacy.py`: deterministically merge delta into legacy `tasks_source.json`.
+- `ops/cutover/reinject_tasks_placeholder.sh`: orchestrate export+merge and emit reinjection plan evidence.
 - `ops/alerts/prometheus-rules.example.yml`: baseline alert rules template.
 - `ops/alerts/README.md`: alert metric mapping and rollout notes.
 
@@ -32,5 +34,10 @@ bash ops/cutover/cutover_to_v2.sh --backup-dir ops/backups/<timestamp>
 
 # 4) Rollback to legacy (dry-run)
 bash ops/cutover/rollback_to_legacy.sh --backup-dir ops/backups/<timestamp>
-```
 
+# 5) Prepare rollback-window reinjection artifacts (dry-run)
+bash ops/cutover/reinject_tasks_placeholder.sh \
+  --backup-dir ops/backups/<timestamp> \
+  --from 2026-03-25T00:00:00Z \
+  --to 2026-03-25T04:00:00Z
+```

@@ -792,10 +792,10 @@
 
 #### P2-3. 建立 parity diff 工具
 
-- [ ] 对比 legacy 与 v2 的 `live-status`
-- [ ] 对比任务动作结果
-- [ ] 对比队列指标与调度结果
-- [ ] 输出字段级 diff 报告
+- [x] 已完成✅ 对比 legacy 与 v2 的 `live-status`
+- [x] 已完成✅ 对比任务动作结果
+- [x] 已完成✅ 对比队列指标与调度结果
+- [x] 已完成✅ 输出字段级 diff 报告
 
 涉及文件：
 
@@ -809,6 +809,13 @@
 风险点：
 
 - 没有对账工具时，双跑只能靠人工观察，容易遗漏深层偏差
+
+落地结果：
+
+- 已新增 `scripts/diff_legacy_vs_v2.py`，支持在线或离线对比 `live-status`、`queue-metrics`、`scheduler-state` 与显式 `--allow-mutation` 的 action 结果
+- 工具已内置字段级递归 diff、slash-path 白名单忽略规则、JSON report 输出，便于将动态时间戳/控制面附加字段纳入预期白名单
+- 已新增 `tests/test_migration_parity.py`，覆盖任务列表排序归一、字段级 diff、白名单匹配与离线 CLI report 生成
+- 已在 `docs/v2-cutover-runbook.md` 中补充 parity diff 的使用方式，便于 shadow run / cutover 演练时直接使用
 
 #### P2-4. 分阶段切流
 
