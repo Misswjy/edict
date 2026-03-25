@@ -939,29 +939,48 @@
 - [x] 已完成✅ `pytest tests/test_backend_dispatch.py -q`
 - [x] 已完成✅ 前端构建：`npm --prefix edict/frontend run build`
 - [x] 已完成✅ 已新增 `tests/test_v2_backend_integration.py`，通过本机 Postgres + 临时 Redis 容器 + 本地 uvicorn backend 进程验证 `POST /api/tasks`、`/api/events`、`/api/live-status`、`/api/queue-metrics`、`/api/admin/health/deep` 的真实联通；执行命令：`EDICT_RUN_DOCKER_INTEGRATION=1 python3 -m pytest tests/test_v2_backend_integration.py -q`
-- [ ] 数据迁移 dry-run
-- [ ] 数据迁移正式导入后对账
+- [x] 已完成✅ 数据迁移 dry-run
+- [x] 已完成✅ 数据迁移正式导入后对账
 - [ ] 浏览器回归：任务看板、任务详情、模型配置、技能配置、朝报、朝堂议政、官员面板
+
+当前验收证据：
+
+- `ops/tests/validate_migration_flow.sh` 已通过临时 Postgres + Alembic + `edict/migration/migrate_json_to_pg.py` 完成 dry-run / 正式导入 / reconciliation 闭环校验
+- 当前仓库 `data/tasks_source.json` 为空数组，因此本轮正式导入对账结果为 `sourceTotal=0 / processedTotal=0 / migrated=0 / skipped=0 / errors=0`
+- 现有 sidecar 数据仍完成导入验证：`dispatchChannel.imported=1`、`agentConfigSnapshot.imported=1`
 
 ### 17.2 业务回归路径
 
-- [ ] 创建旨意 -> 司礼监分办 -> 中书起草 -> 门下审批 -> 尚书派发 -> 六部执行 -> 审查 -> 完成
-- [ ] 门下驳回 -> 中书返工 -> 二次审批
-- [ ] 快车道任务自动进入执行队列
-- [ ] stop / resume / cancel
-- [ ] review approve / reject
-- [ ] consult 不改主状态
-- [ ] scheduler retry / escalate / rollback
-- [ ] archive / archiveAllDone
+- [x] 已完成✅ 创建旨意 -> 司礼监分办 -> 中书起草 -> 门下审批 -> 尚书派发 -> 六部执行 -> 审查 -> 完成
+- [x] 已完成✅ 门下驳回 -> 中书返工 -> 二次审批
+- [x] 已完成✅ 快车道任务自动进入执行队列
+- [x] 已完成✅ stop / resume / cancel
+- [x] 已完成✅ review approve / reject
+- [x] 已完成✅ consult 不改主状态
+- [x] 已完成✅ scheduler retry / escalate / rollback
+- [x] 已完成✅ archive / archiveAllDone
+
+当前验收证据：
+
+- `tests/test_server.py` 已补齐 happy path、驳回返工、快车道、consult、stop/resume/cancel、scheduler retry/escalate/rollback、archive/archiveAllDone 回归
+- `python3 -m pytest tests/test_server.py tests/test_architecture_contracts.py tests/test_backend_dispatch.py tests/test_scheduler_worker.py tests/test_backend_monitoring.py tests/test_event_bus_monitoring.py -q` 已验证 `53 passed`
 
 ### 17.3 非功能验收
 
-- [ ] Worker 崩溃恢复
-- [ ] 重复 dispatch 幂等
-- [ ] Redis pending reclaim 正常
-- [ ] 中央队列指标正确
-- [ ] 深度健康检查正常
-- [ ] 日志与审计可检索
+- [x] 已完成✅ Worker 崩溃恢复
+- [x] 已完成✅ 重复 dispatch 幂等
+- [x] 已完成✅ Redis pending reclaim 正常
+- [x] 已完成✅ 中央队列指标正确
+- [x] 已完成✅ 深度健康检查正常
+- [x] 已完成✅ 日志与审计可检索
+
+当前验收证据：
+
+- `tests/test_backend_dispatch.py` 覆盖 pending recovery、scheduler stalled/retry/rollback、中央队列 backlog / fast lane 指标
+- `tests/test_architecture_contracts.py` 覆盖同一 `_stateVersion` 下重复 dispatch 幂等
+- `tests/test_event_bus_monitoring.py` 覆盖 worker heartbeat registry 与 Redis XPENDING summary 解析
+- `tests/test_backend_monitoring.py` 覆盖 `/api/admin/health/deep`、pending summary、Prometheus metrics，以及 `task_audits` 聚合查询
+- `tests/test_v2_event_projections.py` + `tests/test_v2_backend_integration.py` 覆盖统一活动流查询、`/api/events?trace_id=...`、`/api/events/stream-info`
 
 ## 18. 回滚方案
 

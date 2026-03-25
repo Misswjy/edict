@@ -273,6 +273,28 @@ def test_pending_events_includes_summary(monkeypatch):
     assert len(payload["pending"]) == 2
 
 
+def test_collect_scheduler_action_totals_reads_task_audits(monkeypatch):
+    _admin, metrics = _load_monitoring_modules(monkeypatch)
+
+    totals = asyncio.run(
+        metrics._collect_scheduler_action_totals(
+            _FakeDB(
+                scheduler_rows=[
+                    ("scheduler.retry", 4),
+                    ("scheduler.escalate", 1),
+                    ("scheduler.rollback", 2),
+                ]
+            )
+        )
+    )
+
+    assert totals == {
+        "scheduler.retry": 4,
+        "scheduler.escalate": 1,
+        "scheduler.rollback": 2,
+    }
+
+
 def test_prometheus_metrics_exposes_core_gauges(monkeypatch):
     admin, metrics = _load_monitoring_modules(monkeypatch)
     rows, summary = _healthy_stream_rows(admin)

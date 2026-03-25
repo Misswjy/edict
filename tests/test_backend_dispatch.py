@@ -19,6 +19,9 @@ def _stub_backend_config(monkeypatch):
         openclaw_project_dir=None,
     )
     monkeypatch.setitem(sys.modules, "edict.backend.app.config", module)
+    sys.modules.pop("edict.backend.app.services.event_bus", None)
+    sys.modules.pop("edict.backend.app.workers.orchestrator_worker", None)
+    sys.modules.pop("edict.backend.app.workers.dispatch_worker", None)
 
 
 def _import_task_service_with_stubs(monkeypatch):

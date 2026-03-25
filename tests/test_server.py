@@ -423,3 +423,171 @@ def test_archive_all_done_rejects_unauthorized_actor(tmp_path, monkeypatch):
     assert '无权执行归档' in result['error']
     [task] = _read_tasks(data_dir)
     assert task['archived'] is False
+
+
+def test_happy_path_with_rework_reaches_done(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    actor = srv.make_actor_context('emperor', source='test')
+
+    created = srv.handle_create_task(
+        '请制定工部春季水利整修方案并督办落实',
+        target_dept='工部',
+        actor=actor,
+    )
+    assert created['ok'] is True
+    task_id = created['taskId']
+
+    assert srv.handle_advance_state(task_id, '司礼监分办', actor=actor)['ok'] is True
+    assert srv.handle_advance_state(task_id, '中书起草', actor=actor)['ok'] is True
+    assert srv.handle_review_action(task_id, 'reject', '门下请返工补充预算', actor=srv.make_actor_context('menxia', source='test'))['ok'] is True
+    assert srv.handle_advance_state(task_id, '中书二次呈报', actor=actor)['ok'] is True
+    assert srv.handle_review_action(task_id, 'approve', '门下准奏', actor=srv.make_actor_context('menxia', source='test'))['ok'] is True
+    assert srv.handle_advance_state(task_id, '尚书派发', actor=actor)['ok'] is True
+    assert srv.handle_advance_state(task_id, '进入执行队列', actor=actor)['ok'] is True
+    assert srv.handle_advance_state(task_id, '六部执行完成', actor=actor)['ok'] is True
+
+    [task] = _read_tasks(data_dir)
+    assert task['id'] == task_id
+    assert task['state'] == 'Done'
+    assert task['org'] == '皇上'
+    assert int(task.get('review_round') or 0) == 1
+    assert task['targetDept'] == '工部'
+
+    audit_entries = _read_audit(data_dir)
+    actions = [entry['action'] for entry in audit_entries if entry.get('task_id') == task_id]
+    assert 'task.create' in actions
+    assert actions.count('review.reject') == 1
+    assert actions.count('review.approve') == 1
+
+
+def test_task_action_stop_resume_cancel_success_path(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    task = {
+        'id': 'JJC-ACTION-001',
+        'title': '动作回归',
+        'state': 'Doing',
+        'org': '工部',
+        'targetDept': '工部',
+        'flow_log': [],
+        'updatedAt': '2026-03-24T00:00:00+00:00',
+    }
+    (data_dir / 'tasks_source.json').write_text(json.dumps([task], ensure_ascii=False))
+    actor = srv.make_actor_context('emperor', source='test')
+
+    assert srv.handle_task_action('JJC-ACTION-001', 'stop', '人工暂停排查', actor=actor)['ok'] is True
+    [task] = _read_tasks(data_dir)
+    assert task['state'] == 'Blocked'
+    assert task['_prev_state'] == 'Doing'
+
+    assert srv.handle_task_action('JJC-ACTION-001', 'resume', '问题已解除', actor=actor)['ok'] is True
+    [task] = _read_tasks(data_dir)
+    assert task['state'] == 'Doing'
+    assert task['block'] == '无'
+
+    assert srv.handle_task_action('JJC-ACTION-001', 'cancel', '皇上取消本旨意', actor=actor)['ok'] is True
+    [task] = _read_tasks(data_dir)
+    assert task['state'] == 'Cancelled'
+    assert task['org'] == '皇上'
+
+
+def test_scheduler_retry_escalate_and_rollback_success_path(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    tasks = [
+        {
+            'id': 'JJC-SCHED-RETRY-001',
+            'title': '自动重试',
+            'state': 'Doing',
+            'org': '工部',
+            'targetDept': '工部',
+            'flow_log': [],
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+        },
+        {
+            'id': 'JJC-SCHED-ESC-001',
+            'title': '自动升级',
+            'state': 'Doing',
+            'org': '工部',
+            'targetDept': '工部',
+            'flow_log': [],
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+        },
+        {
+            'id': 'JJC-SCHED-ROLL-001',
+            'title': '自动回滚',
+            'state': 'Review',
+            'org': '尚书省',
+            'targetDept': '工部',
+            'flow_log': [],
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+            '_scheduler': {
+                'enabled': True,
+                'retryCount': 2,
+                'escalationLevel': 2,
+                'autoRollback': True,
+                'snapshot': {
+                    'state': 'Doing',
+                    'org': '工部',
+                    'now': '执行中',
+                    'savedAt': '2026-03-24T00:00:00+00:00',
+                    'note': 'before-review',
+                },
+            },
+        },
+    ]
+    (data_dir / 'tasks_source.json').write_text(json.dumps(tasks, ensure_ascii=False))
+    actor = srv.make_actor_context('sili', source='test')
+
+    retry = srv.handle_scheduler_retry('JJC-SCHED-RETRY-001', '超时未推进', actor=actor)
+    assert retry['ok'] is True
+    escalate = srv.handle_scheduler_escalate('JJC-SCHED-ESC-001', '持续卡住', actor=actor)
+    assert escalate['ok'] is True
+    rollback = srv.handle_scheduler_rollback('JJC-SCHED-ROLL-001', '恢复到稳定节点', actor=actor)
+    assert rollback['ok'] is True
+
+    tasks_by_id = {item['id']: item for item in _read_tasks(data_dir)}
+    assert tasks_by_id['JJC-SCHED-RETRY-001']['_scheduler']['retryCount'] == 1
+    assert tasks_by_id['JJC-SCHED-ESC-001']['_scheduler']['escalationLevel'] == 1
+    assert tasks_by_id['JJC-SCHED-ROLL-001']['state'] == 'Doing'
+    assert tasks_by_id['JJC-SCHED-ROLL-001']['org'] == '工部'
+
+
+def test_archive_and_archive_all_done_success_path(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    tasks = [
+        {
+            'id': 'JJC-ARCHIVE-OK-001',
+            'title': '单任务归档',
+            'state': 'Doing',
+            'org': '工部',
+            'archived': False,
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+        },
+        {
+            'id': 'JJC-ARCHIVE-OK-002',
+            'title': '已完成任务',
+            'state': 'Done',
+            'org': '皇上',
+            'archived': False,
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+        },
+        {
+            'id': 'JJC-ARCHIVE-OK-003',
+            'title': '已取消任务',
+            'state': 'Cancelled',
+            'org': '皇上',
+            'archived': False,
+            'updatedAt': '2026-03-24T00:00:00+00:00',
+        },
+    ]
+    (data_dir / 'tasks_source.json').write_text(json.dumps(tasks, ensure_ascii=False))
+    actor = srv.make_actor_context('emperor', source='test')
+
+    assert srv.handle_archive_task('JJC-ARCHIVE-OK-001', True, actor=actor)['ok'] is True
+    archive_all = srv.handle_archive_task('', True, archive_all_done=True, actor=actor)
+    assert archive_all['ok'] is True
+    assert archive_all['count'] == 2
+
+    tasks_by_id = {item['id']: item for item in _read_tasks(data_dir)}
+    assert tasks_by_id['JJC-ARCHIVE-OK-001']['archived'] is True
+    assert tasks_by_id['JJC-ARCHIVE-OK-002']['archived'] is True
+    assert tasks_by_id['JJC-ARCHIVE-OK-003']['archived'] is True

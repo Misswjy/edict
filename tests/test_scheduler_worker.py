@@ -26,6 +26,7 @@ def _stub_backend_config(monkeypatch):
 
 def _import_scheduler_worker(monkeypatch):
     _stub_backend_config(monkeypatch)
+    sys.modules.pop("edict.backend.app.services.event_bus", None)
     sys.modules.pop("edict.backend.app.workers.scheduler_worker", None)
     return importlib.import_module("edict.backend.app.workers.scheduler_worker")
 

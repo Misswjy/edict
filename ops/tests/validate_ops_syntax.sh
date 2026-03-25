@@ -8,6 +8,7 @@ SCRIPTS=(
   "ops/cutover/rollback_to_legacy.sh"
   "ops/cutover/reinject_tasks_placeholder.sh"
   "ops/tests/validate_cutover_docs.sh"
+  "ops/tests/validate_migration_flow.sh"
   "ops/tests/validate_reinject_tools.sh"
 )
 
