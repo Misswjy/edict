@@ -767,6 +767,12 @@
 
 - 只迁当前快照、不迁历史上下文，会让审计与回放能力倒退
 
+当前进度：
+
+- `edict/migration/migrate_json_to_pg.py` 已与当前 `Task` ORM 对齐，`parse_old_task()` 会显式保留 `flow_log / progress_log / consultLog / _scheduler / archived / review_round`
+- dry-run 现已返回 `report + stats + reconciliation` bundle，并支持 `--report-file` 输出完整对账 JSON；正式导入仍保留重复主键跳过逻辑
+- sidecar 导入已统一写入 durable audit，便于后续核对导入量与跳过量
+
 #### P2-2. 迁移非任务附属数据
 
 - [ ] 迁移模型配置
@@ -790,6 +796,12 @@
 风险点：
 
 - 如果只迁任务，不迁这些附属数据，前端切流依旧不完整
+
+当前进度：
+
+- 模型变更历史、朝报配置/快照、朝堂议政会话、派发渠道当前值已具备导入路径
+- 迁移器现已补充 `config.agent.snapshot` 与 `skill.inventory.snapshot`，可在提供 `--remote-root` 时盘点当前 agent config、本地技能索引与远程 skill metadata
+- `officials-stats` 已明确保持 `runtime-derived`，不作为持久化投影导入
 
 ### 15. 影子双跑与对账
 
@@ -858,7 +870,7 @@
 
 #### P3-1. legacy 先只读，再删除
 
-- [ ] 将 legacy server 标记为只读或明确废弃
+- [x] 已完成✅ `dashboard/server.py` 已接入 `ops/cutover/.legacy_write_frozen` 写保护；Stage 5 期间 legacy HTTP 写请求会返回只读错误，并由 `tests/test_server.py` 覆盖 GET/POST 回归
 - [ ] 停止所有运行时对 `tasks_source.json` 的写入
 - [ ] 删除或下线 `edict/backend/app/api/legacy.py`
 - [ ] 停止 `scripts/run_loop.sh` 和 JSON 轮询刷新

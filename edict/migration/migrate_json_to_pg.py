@@ -29,7 +29,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.task_contract import TaskState, canonicalize_lane, canonicalize_state, ensure_task_shape
-from app.services.agent_config_service import list_remote_skills
+from app.services.agent_config_service import build_agent_config_payload, list_remote_skills
 from app.services.court_discuss_service import (
     COURT_DISCUSS_SNAPSHOT_ACTION,
     normalize_session,
@@ -192,6 +192,97 @@ def _build_skill_index(agent_config: dict[str, Any], remote_root: Path | None) -
         "perAgent": per_agent,
         "remoteSkillCount": remote_skills_count,
         "remoteSkills": remote_skills_details,
+    }
+
+
+def parse_agent_config_snapshot(
+    *,
+    project_root_override: Path,
+    remote_root: Path | None,
+) -> dict[str, object] | None:
+    if remote_root is None or not remote_root.exists():
+        return None
+    openclaw_cfg = remote_root / "openclaw.json"
+    has_workspace = any(remote_root.glob("workspace-*"))
+    if not openclaw_cfg.exists() and not has_workspace:
+        return None
+
+    config_payload = build_agent_config_payload(
+        project_root_override=project_root_override,
+        openclaw_home_override=remote_root,
+    )
+    stable_key = (
+        "legacy-agent-config-snapshot:"
+        f"{json.dumps(config_payload, ensure_ascii=False, sort_keys=True)}"
+    )
+    recorded_at = _file_timestamp(openclaw_cfg) if openclaw_cfg.exists() else datetime.now(timezone.utc)
+    return {
+        "audit_id": uuid.uuid5(uuid.NAMESPACE_URL, stable_key),
+        "ts": recorded_at,
+        "request_id": "legacy-agent-config"[:64],
+        "task_id": "",
+        "action": "config.agent.snapshot",
+        "actor_id": "migration",
+        "actor_type": "system",
+        "source": "legacy-import",
+        "signature_verified": False,
+        "from_state": "",
+        "to_state": "",
+        "target_agent": "",
+        "allowed": True,
+        "deny_reason": "",
+        "policy_version": "legacy-import",
+        "payload": {
+            "config": config_payload,
+            "importedFrom": [
+                str(openclaw_cfg),
+                "workspace skills scan",
+            ],
+        },
+        "payload_hash": "",
+        "payload_summary": "agent config snapshot",
+    }
+
+
+def parse_skill_inventory_snapshot(
+    *,
+    file_path: Path,
+    remote_root: Path | None,
+) -> dict[str, object] | None:
+    agent_config = _read_json(file_path.parent / "agent_config.json", {})
+    skill_index = _build_skill_index(agent_config if isinstance(agent_config, dict) else {}, remote_root)
+    if int(skill_index.get("total", 0) or 0) <= 0 and int(skill_index.get("remoteSkillCount", 0) or 0) <= 0:
+        return None
+
+    stable_key = (
+        "legacy-skill-inventory-snapshot:"
+        f"{json.dumps(skill_index, ensure_ascii=False, sort_keys=True)}"
+    )
+    return {
+        "audit_id": uuid.uuid5(uuid.NAMESPACE_URL, stable_key),
+        "ts": _file_timestamp(file_path.parent / "agent_config.json"),
+        "request_id": "legacy-skill-inventory"[:64],
+        "task_id": "",
+        "action": "skill.inventory.snapshot",
+        "actor_id": "migration",
+        "actor_type": "system",
+        "source": "legacy-import",
+        "signature_verified": False,
+        "from_state": "",
+        "to_state": "",
+        "target_agent": "",
+        "allowed": True,
+        "deny_reason": "",
+        "policy_version": "legacy-import",
+        "payload": {
+            "inventory": skill_index,
+            "importedFrom": [
+                str(file_path.parent / "agent_config.json"),
+                "workspace skills scan",
+            ],
+        },
+        "payload_hash": "",
+        "payload_summary": "skill inventory snapshot",
     }
 
 
@@ -388,9 +479,51 @@ def analyze_migration_sources(file_path: Path, *, remote_root: Path | None = Non
             "morningBriefFiles": [path.name for path in morning_brief_files],
             "dispatchChannel": str(agent_config.get("dispatchChannel") or "").strip() if isinstance(agent_config, dict) else "",
             "skillIndex": skill_index,
+            "agentConfigSnapshotEligible": parse_agent_config_snapshot(
+                project_root_override=file_path.parent.parent,
+                remote_root=remote_root,
+            )
+            is not None,
+            "skillInventorySnapshotEligible": parse_skill_inventory_snapshot(
+                file_path=file_path,
+                remote_root=remote_root,
+            )
+            is not None,
+            "officialsStatsStrategy": "runtime-derived",
         },
     }
     return report
+
+
+def build_reconciliation_bundle(report: dict[str, Any], stats: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    tasks_report = dict(report.get("tasks") or {})
+    parse_errors = list(tasks_report.get("parseErrors") or [])
+    source_total = int(tasks_report.get("total", 0) or 0)
+    processed_total = (
+        int(stats.get("migrated", 0) or 0)
+        + int(stats.get("skipped", 0) or 0)
+        + int(stats.get("errors", 0) or 0)
+    )
+    return {
+        "dryRun": bool(dry_run),
+        "ready": not parse_errors and int(stats.get("errors", 0) or 0) == 0,
+        "tasks": {
+            "sourceTotal": source_total,
+            "processedTotal": processed_total,
+            "sourceMatchesProcessed": source_total == processed_total,
+            "migrated": int(stats.get("migrated", 0) or 0),
+            "skipped": int(stats.get("skipped", 0) or 0),
+            "errors": int(stats.get("errors", 0) or 0),
+            "archived": int(tasks_report.get("archived", 0) or 0),
+            "withReviewRounds": int(tasks_report.get("withReviewRounds", 0) or 0),
+            "normalizedState": dict(tasks_report.get("normalizedState") or {}),
+            "parseErrors": parse_errors,
+        },
+        "sidecars": {
+            "source": dict(report.get("sidecars") or {}),
+            "audits": dict(stats.get("audits") or {}),
+        },
+    }
 
 
 async def migrate(file_path: Path, dry_run: bool = False, remote_root: Path | None = None):
@@ -421,6 +554,8 @@ async def migrate(file_path: Path, dry_run: bool = False, remote_root: Path | No
             "morningBriefs": {"imported": 0, "skipped": 0},
             "dispatchChannel": {"imported": 0, "skipped": 0},
             "skillIndex": {"local": 0, "remote": 0},
+            "agentConfigSnapshot": {"imported": 0, "skipped": 0},
+            "skillInventorySnapshot": {"imported": 0, "skipped": 0},
         },
     }
     skill_index = report["sidecars"].get("skillIndex", {})
@@ -435,8 +570,13 @@ async def migrate(file_path: Path, dry_run: bool = False, remote_root: Path | No
         log.info("Dry run 附属数据: %s", json.dumps(report["sidecars"], ensure_ascii=False))
         if report["tasks"]["parseErrors"]:
             log.warning("Dry run 发现 %s 条任务解析错误", len(report["tasks"]["parseErrors"]))
-        log.info("Dry run 完成: %s", json.dumps(report, ensure_ascii=False))
-        return report
+        bundle = {
+            "report": report,
+            "stats": stats,
+            "reconciliation": build_reconciliation_bundle(report, stats, dry_run=True),
+        }
+        log.info("Dry run 完成: %s", json.dumps(bundle["reconciliation"], ensure_ascii=False))
+        return bundle
 
     from app.db import async_session
     from app.models.task import Task
@@ -549,8 +689,33 @@ async def migrate(file_path: Path, dry_run: bool = False, remote_root: Path | No
                     db.add(TaskAudit(**params))
                     stats["audits"]["dispatchChannel"]["imported"] += 1
 
+        agent_config_snapshot = parse_agent_config_snapshot(
+            project_root_override=file_path.parent.parent,
+            remote_root=remote_root,
+        )
+        if agent_config_snapshot:
+            existing = await db.get(TaskAudit, agent_config_snapshot["audit_id"])
+            if existing:
+                stats["audits"]["agentConfigSnapshot"]["skipped"] += 1
+            else:
+                db.add(TaskAudit(**agent_config_snapshot))
+                stats["audits"]["agentConfigSnapshot"]["imported"] += 1
+
+        skill_inventory_snapshot = parse_skill_inventory_snapshot(
+            file_path=file_path,
+            remote_root=remote_root,
+        )
+        if skill_inventory_snapshot:
+            existing = await db.get(TaskAudit, skill_inventory_snapshot["audit_id"])
+            if existing:
+                stats["audits"]["skillInventorySnapshot"]["skipped"] += 1
+            else:
+                db.add(TaskAudit(**skill_inventory_snapshot))
+                stats["audits"]["skillInventorySnapshot"]["imported"] += 1
+
         await db.commit()
 
+    reconciliation = build_reconciliation_bundle(report, stats, dry_run=False)
     log.info("技能索引: 本地 %s, 远程 %s", stats["audits"]["skillIndex"]["local"], stats["audits"]["skillIndex"]["remote"])
     log.info(
         "迁移完成: 总计 %s, 成功 %s, 跳过 %s, 错误 %s, 审计=%s",
@@ -560,7 +725,7 @@ async def migrate(file_path: Path, dry_run: bool = False, remote_root: Path | No
         stats["errors"],
         json.dumps(stats["audits"], ensure_ascii=False),
     )
-    return {"report": report, "stats": stats}
+    return {"report": report, "stats": stats, "reconciliation": reconciliation}
 
 
 def main():
@@ -581,7 +746,7 @@ def main():
     )
     if args.report_file and result:
         report_path = Path(args.report_file).expanduser()
-        report_path.write_text(json.dumps(result["report"], ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

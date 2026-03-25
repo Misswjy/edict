@@ -182,8 +182,84 @@ def test_analyze_migration_sources_reports_sidecars(tmp_path: Path):
     assert report["sidecars"]["morningConfigPresent"] is True
     assert report["sidecars"]["morningBriefFiles"] == ["morning_brief_20260325.json"]
     assert report["sidecars"]["dispatchChannel"] == "slack"
+    assert report["sidecars"]["officialsStatsStrategy"] == "runtime-derived"
     skill_index = report["sidecars"]["skillIndex"]
     assert skill_index["total"] == 0
     assert skill_index["remoteSkillCount"] == 1
     assert skill_index["remoteSkills"][0]["agentId"] == "gongbu"
     assert any(entry["agent"] == "gongbu" for entry in skill_index["perAgent"])
+    assert report["sidecars"]["agentConfigSnapshotEligible"] is True
+    assert report["sidecars"]["skillInventorySnapshotEligible"] is True
+
+
+def test_parse_agent_config_snapshot_uses_openclaw_runtime_state(tmp_path: Path):
+    migrator = _load_migrator()
+
+    project_root = tmp_path / "repo"
+    data_dir = project_root / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "agent_config.json").write_text(json.dumps({"dispatchChannel": "slack"}), encoding="utf-8")
+
+    oclaw = tmp_path / ".openclaw"
+    oclaw.mkdir(parents=True)
+    (oclaw / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"model": {"primary": "openai/gpt-4o"}},
+                    "list": [{"id": "gongbu", "workspace": str(oclaw / "workspace-gongbu")}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    skill_dir = oclaw / "workspace-gongbu" / "skills" / "dispatch"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: dispatch\n---\nDispatch helper\n", encoding="utf-8")
+
+    entry = migrator.parse_agent_config_snapshot(project_root_override=project_root, remote_root=oclaw)
+
+    assert entry is not None
+    assert entry["action"] == "config.agent.snapshot"
+    assert entry["payload"]["config"]["dispatchChannel"] == "slack"
+    assert entry["payload"]["config"]["agents"][0]["id"] == "gongbu"
+
+
+def test_migrate_dry_run_returns_bundle_with_reconciliation(tmp_path: Path):
+    migrator = _load_migrator()
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "tasks_source.json").write_text(
+        json.dumps({"tasks": [{"id": "JJC-DRY-001", "title": "dry run", "state": "Doing"}]}),
+        encoding="utf-8",
+    )
+
+    result = __import__("asyncio").run(migrator.migrate(data_dir / "tasks_source.json", dry_run=True))
+
+    assert result["report"]["tasks"]["total"] == 1
+    assert result["stats"]["total"] == 1
+    assert result["reconciliation"]["dryRun"] is True
+    assert result["reconciliation"]["tasks"]["sourceMatchesProcessed"] is False
+    assert result["reconciliation"]["ready"] is True
+
+
+def test_parse_skill_inventory_snapshot_requires_local_or_remote_skills(tmp_path: Path):
+    migrator = _load_migrator()
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "tasks_source.json").write_text(json.dumps({"tasks": []}), encoding="utf-8")
+    (data_dir / "agent_config.json").write_text(
+        json.dumps({"agents": [{"id": "gongbu", "skills": [{"name": "dispatch"}]}]}),
+        encoding="utf-8",
+    )
+
+    entry = migrator.parse_skill_inventory_snapshot(
+        file_path=data_dir / "tasks_source.json",
+        remote_root=None,
+    )
+
+    assert entry is not None
+    assert entry["action"] == "skill.inventory.snapshot"
+    assert entry["payload"]["inventory"]["total"] == 1
