@@ -172,6 +172,31 @@ def test_event_bus_projects_agent_todos_into_todo_rows():
     assert second.metadata_["source_of_truth"] == "tasks.todos"
 
 
+def test_event_bus_accepts_sessionmaker_style_factory_for_projections():
+    EventBus = _import_event_bus_with_stubbed_config()
+    session = _FakeSession()
+    bus = EventBus(session_factory=lambda: session)
+
+    asyncio.run(
+        bus._persist_auxiliary_records(
+            TOPIC_AGENT_THOUGHTS,
+            "JJC-PROJ-THOUGHT-FACTORY-1",
+            "agent.gongbu",
+            {
+                "agent": "gongbu",
+                "output": "session factory 路径可用",
+                "tokens": 7,
+                "confidence": 0.8,
+            },
+            {"step": 1},
+        )
+    )
+
+    assert session.commits == 1
+    assert len(session.added) == 1
+    assert session.added[0].content == "session factory 路径可用"
+
+
 def test_build_task_activity_payload_merges_snapshot_events_and_projections():
     task_snapshot = {
         "id": "JJC-ACT-001",

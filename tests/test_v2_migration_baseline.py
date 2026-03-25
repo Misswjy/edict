@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
+import sys
+import types
 from pathlib import Path
 
 
@@ -14,6 +17,36 @@ def _load_migrator():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+class _FakeMigrationSession:
+    def __init__(self):
+        self.tasks: dict[str, object] = {}
+        self.audits: dict[object, object] = {}
+        self.commits = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, model, key):
+        if getattr(model, "__name__", "") == "Task":
+            return self.tasks.get(str(key))
+        if getattr(model, "__name__", "") == "TaskAudit":
+            return self.audits.get(key)
+        return None
+
+    def add(self, obj):
+        if getattr(obj, "__tablename__", "") == "tasks":
+            self.tasks[getattr(obj, "id")] = obj
+            return
+        if getattr(obj, "__tablename__", "") == "task_audits":
+            self.audits[getattr(obj, "audit_id")] = obj
+
+    async def commit(self):
+        self.commits += 1
 
 
 def test_parse_old_task_maps_legacy_snapshot_to_current_task_columns():
@@ -41,6 +74,9 @@ def test_parse_old_task_maps_legacy_snapshot_to_current_task_columns():
     assert params["state"].value == "Doing"
     assert params["consult_log"] == [{"note": "旧式 consult_log"}]
     assert params["scheduler"]["retryCount"] == 2
+    assert params["scheduler"]["legacyImport"]["legacyTaskId"] == "JJC-LEGACY-001"
+    assert params["scheduler"]["legacyImport"]["importedFrom"] == "data/tasks_source.json"
+    assert params["scheduler"]["legacyImport"]["originalState"] == "Doing"
     assert params["state_version"] == 6
     assert params["target_dept"] == "工部"
     assert params["template_id"] == "tmpl-migrate"
@@ -66,6 +102,7 @@ def test_parse_old_task_handles_legacy_state_fallbacks_and_archive_flags():
     assert params["state"].value == "Sili"
     assert params["archived"] is True
     assert params["archived_at"].isoformat() == "2026-03-22T10:00:00+00:00"
+    assert params["scheduler"]["legacyImport"]["legacyArchivedAt"] == "2026-03-22T10:00:00+00:00"
 
 
 def test_parse_legacy_morning_sidecars_to_audit_snapshots(tmp_path: Path):
@@ -120,6 +157,7 @@ def test_parse_legacy_court_session_keeps_numeric_timestamps_stable():
 
     assert entry is not None
     assert entry["ts"].isoformat() == "2025-03-25T00:07:14+00:00"
+    assert entry["payload"]["importedFrom"] == "data/court_discuss_sessions.json"
     assert entry["payload"]["session"]["updated_at"] == 1_742_861_234.0
     same_entry = migrator.parse_legacy_court_session(
         {
@@ -272,7 +310,7 @@ def test_migrate_dry_run_returns_bundle_with_reconciliation(tmp_path: Path):
         encoding="utf-8",
     )
 
-    result = __import__("asyncio").run(migrator.migrate(data_dir / "tasks_source.json", dry_run=True))
+    result = asyncio.run(migrator.migrate(data_dir / "tasks_source.json", dry_run=True))
 
     assert result["report"]["tasks"]["total"] == 1
     assert result["stats"]["total"] == 1
@@ -300,3 +338,189 @@ def test_parse_skill_inventory_snapshot_requires_local_or_remote_skills(tmp_path
     assert entry is not None
     assert entry["action"] == "skill.inventory.snapshot"
     assert entry["payload"]["inventory"]["total"] == 1
+
+
+def test_migrate_formal_import_persists_sidecars_and_skips_duplicates(tmp_path: Path, monkeypatch):
+    migrator = _load_migrator()
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "tasks_source.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "JJC-IMPORT-001",
+                        "title": "正式迁移任务",
+                        "state": "Doing",
+                        "official": "工部尚书",
+                        "org": "工部",
+                        "review_round": 2,
+                        "archived": True,
+                        "archivedAt": "2026-03-25T08:15:00+00:00",
+                        "flow_log": [{"remark": "legacy-flow"}],
+                        "progress_log": [{"content": "legacy-progress"}],
+                        "consultLog": [{"to": "hubu"}],
+                        "_scheduler": {"retryCount": 1},
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (data_dir / "model_change_log.json").write_text(
+        json.dumps(
+            [{"agentId": "gongbu", "oldModel": "openai/gpt-4o-mini", "newModel": "openai/gpt-4o", "at": "2026-03-25T00:00:00+00:00"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (data_dir / "court_discuss_sessions.json").write_text(
+        json.dumps(
+            {
+                "sess-1": {
+                    "session_id": "sess-1",
+                    "topic": "迁移朝议",
+                    "task_id": "JJC-IMPORT-001",
+                    "officials": [],
+                    "messages": [],
+                    "phase": "discussing",
+                    "round": 1,
+                    "updated_at": 1_742_861_234.0,
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (data_dir / "morning_brief_config.json").write_text(
+        json.dumps({"categories": [{"name": "政治", "enabled": True}], "keywords": ["AI"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (data_dir / "morning_brief_20260325.json").write_text(
+        json.dumps({"date": "20260325", "categories": {"政治": [{"title": "晨报"}]}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (data_dir / "agent_config.json").write_text(
+        json.dumps(
+            {
+                "dispatchChannel": "slack",
+                "agents": [{"id": "gongbu", "skills": [{"name": "dispatch"}]}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    openclaw = tmp_path / "openclaw"
+    openclaw.mkdir(parents=True)
+    (openclaw / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"model": {"primary": "openai/gpt-4o"}},
+                    "list": [{"id": "gongbu", "workspace": str(openclaw / "workspace-gongbu")}],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    remote_skill = openclaw / "workspace-gongbu" / "skills" / "remote-brain"
+    remote_skill.mkdir(parents=True)
+    (remote_skill / "SKILL.md").write_text("remote skill", encoding="utf-8")
+    (remote_skill / ".source.json").write_text(
+        json.dumps(
+            {
+                "sourceUrl": "https://example.com/remote-brain/SKILL.md",
+                "description": "remote brainstorm",
+                "addedAt": "2026-03-25T00:00:00+00:00",
+                "lastUpdated": "2026-03-25T01:00:00+00:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    fake_db = _FakeMigrationSession()
+
+    class Task:
+        __tablename__ = "tasks"
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class TaskAudit:
+        __tablename__ = "task_audits"
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    fake_db_module = types.ModuleType("app.db")
+    fake_db_module.async_session = lambda: fake_db
+    fake_models_package = types.ModuleType("app.models")
+    fake_models_package.__path__ = []
+    fake_task_module = types.ModuleType("app.models.task")
+    fake_task_module.Task = Task
+    fake_task_audit_module = types.ModuleType("app.models.task_audit")
+    fake_task_audit_module.TaskAudit = TaskAudit
+
+    monkeypatch.setitem(sys.modules, "app.db", fake_db_module)
+    monkeypatch.setitem(sys.modules, "app.models", fake_models_package)
+    monkeypatch.setitem(sys.modules, "app.models.task", fake_task_module)
+    monkeypatch.setitem(sys.modules, "app.models.task_audit", fake_task_audit_module)
+
+    first = asyncio.run(migrator.migrate(data_dir / "tasks_source.json", dry_run=False, remote_root=openclaw))
+
+    assert first["stats"]["migrated"] == 1
+    assert first["stats"]["skipped"] == 0
+    assert first["stats"]["errors"] == 0
+    assert first["reconciliation"]["tasks"]["sourceMatchesProcessed"] is True
+    assert first["stats"]["audits"]["modelChanges"]["imported"] == 1
+    assert first["stats"]["audits"]["courtDiscussSessions"]["imported"] == 1
+    assert first["stats"]["audits"]["morningConfig"]["imported"] == 1
+    assert first["stats"]["audits"]["morningBriefs"]["imported"] == 1
+    assert first["stats"]["audits"]["dispatchChannel"]["imported"] == 1
+    assert first["stats"]["audits"]["agentConfigSnapshot"]["imported"] == 1
+    assert first["stats"]["audits"]["skillInventorySnapshot"]["imported"] == 1
+    assert first["stats"]["audits"]["skillIndex"] == {"local": 1, "remote": 1}
+
+    task = fake_db.tasks["JJC-IMPORT-001"]
+    assert task.review_round == 2
+    assert task.archived is True
+    assert task.scheduler["legacyImport"]["importedFrom"] == "data/tasks_source.json"
+    assert task.scheduler["legacyImport"]["originalState"] == "Doing"
+    assert task.scheduler["legacyImport"]["legacyArchivedAt"] == "2026-03-25T08:15:00+00:00"
+
+    audits = list(fake_db.audits.values())
+    actions = {audit.action for audit in audits}
+    assert actions == {
+        "config.set_model",
+        "court_discuss.snapshot",
+        "morning.config.snapshot",
+        "morning.brief.snapshot",
+        "config.set_dispatch_channel",
+        "config.agent.snapshot",
+        "skill.inventory.snapshot",
+    }
+    court_audit = next(audit for audit in audits if audit.action == "court_discuss.snapshot")
+    assert court_audit.payload["importedFrom"] == "data/court_discuss_sessions.json"
+    skill_audit = next(audit for audit in audits if audit.action == "skill.inventory.snapshot")
+    assert skill_audit.payload["inventory"]["remoteSkillCount"] == 1
+    assert skill_audit.payload["inventory"]["remoteSkills"][0]["sourceUrl"] == "https://example.com/remote-brain/SKILL.md"
+
+    second = asyncio.run(migrator.migrate(data_dir / "tasks_source.json", dry_run=False, remote_root=openclaw))
+
+    assert second["stats"]["migrated"] == 0
+    assert second["stats"]["skipped"] == 1
+    assert second["stats"]["errors"] == 0
+    assert second["reconciliation"]["tasks"]["sourceMatchesProcessed"] is True
+    assert second["stats"]["audits"]["modelChanges"]["skipped"] == 1
+    assert second["stats"]["audits"]["courtDiscussSessions"]["skipped"] == 1
+    assert second["stats"]["audits"]["morningConfig"]["skipped"] == 1
+    assert second["stats"]["audits"]["morningBriefs"]["skipped"] == 1
+    assert second["stats"]["audits"]["dispatchChannel"]["skipped"] == 1
+    assert second["stats"]["audits"]["agentConfigSnapshot"]["skipped"] == 1
+    assert second["stats"]["audits"]["skillInventorySnapshot"]["skipped"] == 1
+    assert fake_db.commits == 2

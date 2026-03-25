@@ -45,6 +45,7 @@ LEGACY_STATE_FALLBACKS = {
     "Todo": TaskState.Pending.value,
     "": TaskState.Pending.value,
 }
+DEFAULT_LEGACY_TASK_SOURCE = "data/tasks_source.json"
 
 
 def parse_legacy_datetime(value: str | None, fallback: datetime | None = None) -> datetime:
@@ -77,7 +78,39 @@ def coerce_task_state(value: str | None) -> TaskState:
         return TaskState.Pending
 
 
-def parse_old_task(old: dict) -> dict:
+def _legacy_source_label(source_path: Path | None, *, fallback: str = DEFAULT_LEGACY_TASK_SOURCE) -> str:
+    if source_path is None:
+        return fallback
+    parent = source_path.parent.name.strip()
+    if parent:
+        return f"{parent}/{source_path.name}"
+    return source_path.name
+
+
+def _legacy_trace_metadata(
+    *,
+    raw: dict[str, Any],
+    task_id: str,
+    source_path: Path | None,
+    original_state: str | None,
+    created_at: datetime,
+    updated_at: datetime,
+    archived_at: datetime | None,
+) -> dict[str, Any]:
+    payload = {
+        "legacyTaskId": str(raw.get("id") or task_id),
+        "importedFrom": _legacy_source_label(source_path),
+        "originalState": str(original_state or raw.get("state") or ""),
+        "legacyCreatedAt": created_at.isoformat(),
+        "legacyUpdatedAt": updated_at.isoformat(),
+        "archived": bool(raw.get("archived")),
+    }
+    if archived_at is not None:
+        payload["legacyArchivedAt"] = archived_at.isoformat()
+    return payload
+
+
+def parse_old_task(old: dict, *, source_path: Path | None = None) -> dict:
     """将旧版 task JSON 转换为当前 ORM 对齐的 Task 参数。"""
     raw = dict(old or {})
     original_state = raw.get("state")
@@ -92,6 +125,20 @@ def parse_old_task(old: dict) -> dict:
     archived = bool(normalized.get("archived"))
     archived_at = parse_legacy_datetime(old.get("archivedAt"), fallback=updated_at) if archived and old.get("archivedAt") else None
     state = coerce_task_state(original_state or normalized.get("state"))
+    scheduler = dict(normalized.get("_scheduler") or {})
+    legacy_trace = dict(scheduler.get("legacyImport") or {})
+    legacy_trace.update(
+        _legacy_trace_metadata(
+            raw=raw,
+            task_id=task_id,
+            source_path=source_path,
+            original_state=str(original_state or ""),
+            created_at=created_at,
+            updated_at=updated_at,
+            archived_at=archived_at,
+        )
+    )
+    scheduler["legacyImport"] = legacy_trace
     return {
         "id": task_id,
         "title": str(normalized.get("title") or "未命名任务"),
@@ -113,7 +160,7 @@ def parse_old_task(old: dict) -> dict:
         "progress_log": list(normalized.get("progress_log") or []),
         "consult_log": list(normalized.get("consultLog") or []),
         "todos": list(normalized.get("todos") or []),
-        "scheduler": dict(normalized.get("_scheduler") or {}),
+        "scheduler": scheduler,
         "template_id": str(normalized.get("templateId") or ""),
         "template_params": dict(normalized.get("templateParams") or {}),
         "target_dept": str(normalized.get("targetDept") or ""),
@@ -220,11 +267,14 @@ def parse_agent_config_snapshot(
         project_root_override=project_root_override,
         openclaw_home_override=remote_root,
     )
+    recorded_at = _file_timestamp(openclaw_cfg) if openclaw_cfg.exists() else datetime.now(timezone.utc)
+    if isinstance(config_payload, dict):
+        config_payload = dict(config_payload)
+        config_payload["generatedAt"] = recorded_at.isoformat()
     stable_key = (
         "legacy-agent-config-snapshot:"
         f"{json.dumps(config_payload, ensure_ascii=False, sort_keys=True)}"
     )
-    recorded_at = _file_timestamp(openclaw_cfg) if openclaw_cfg.exists() else datetime.now(timezone.utc)
     return {
         "audit_id": uuid.uuid5(uuid.NAMESPACE_URL, stable_key),
         "ts": recorded_at,
@@ -428,6 +478,7 @@ def parse_legacy_court_session(entry: dict) -> dict[str, object] | None:
         "payload": {
             "event": "legacy-import",
             "session": serialize_session(normalized),
+            "importedFrom": "data/court_discuss_sessions.json",
         },
         "payload_hash": "",
         "payload_summary": f"court session {session_id}",
@@ -450,7 +501,7 @@ def analyze_migration_sources(file_path: Path, *, remote_root: Path | None = Non
         state_str = str(old.get("state", "?"))
         by_state[state_str] = by_state.get(state_str, 0) + 1
         try:
-            params = parse_old_task(old)
+            params = parse_old_task(old, source_path=file_path)
             normalized = params["state"].value
             normalized_state[normalized] = normalized_state.get(normalized, 0) + 1
             archived_count += int(bool(params["archived"]))
@@ -574,7 +625,7 @@ async def migrate(file_path: Path, dry_run: bool = False, remote_root: Path | No
     if dry_run:
         log.info("=== DRY RUN 模式，不写入数据库 ===")
         for old in old_tasks:
-            params = parse_old_task(old)
+            params = parse_old_task(old, source_path=file_path)
             log.info(f"  [{params['id']}] {params['title'][:40]} → {params['state'].value}")
         log.info("Dry run 附属数据: %s", json.dumps(report["sidecars"], ensure_ascii=False))
         if report["tasks"]["parseErrors"]:
@@ -595,7 +646,7 @@ async def migrate(file_path: Path, dry_run: bool = False, remote_root: Path | No
     async with async_session() as db:
         for old in old_tasks:
             try:
-                params = parse_old_task(old)
+                params = parse_old_task(old, source_path=file_path)
                 existing = await db.get(Task, params["id"])
                 if existing:
                     log.debug(f"跳过已存在: {params['id']}")

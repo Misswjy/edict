@@ -747,10 +747,10 @@
 
 #### P2-1. 重写 JSON -> PG 迁移器
 
-- [ ] 修复 `edict/migration/migrate_json_to_pg.py` 与当前 ORM 的失配
-- [ ] 支持 dry-run、正式导入、重复导入跳过、详细对账报告
-- [ ] 迁移 `flow_log / progress_log / consultLog / _scheduler / archived / review_round`
-- [ ] 为 legacy 记录补齐最小可追溯 metadata
+- [x] 修复 `edict/migration/migrate_json_to_pg.py` 与当前 ORM 的失配
+- [x] 支持 dry-run、正式导入、重复导入跳过、详细对账报告
+- [x] 迁移 `flow_log / progress_log / consultLog / _scheduler / archived / review_round`
+- [x] 为 legacy 记录补齐最小可追溯 metadata
 
 涉及文件：
 
@@ -772,15 +772,17 @@
 - `edict/migration/migrate_json_to_pg.py` 已与当前 `Task` ORM 对齐，`parse_old_task()` 会显式保留 `flow_log / progress_log / consultLog / _scheduler / archived / review_round`
 - dry-run 现已返回 `report + stats + reconciliation` bundle，并支持 `--report-file` 输出完整对账 JSON；正式导入仍保留重复主键跳过逻辑
 - sidecar 导入已统一写入 durable audit，便于后续核对导入量与跳过量
+- legacy 任务现会在 `_scheduler.legacyImport` 中补齐 `legacyTaskId / importedFrom / originalState / legacyCreatedAt / legacyUpdatedAt / legacyArchivedAt`，`court_discuss.snapshot` 也补充了 `importedFrom`
 - `court_discuss_sessions.json` 的 legacy `float` 时间戳已在迁移阶段归一为稳定 UTC 时间，避免 `task_audits.ts`、`audit_id` 与重复导入跳过因 rerun 漂移
+- 已新增正式导入回归，覆盖任务落库、sidecar audit 落库、重复导入跳过，以及 `config.agent.snapshot` 去除 `generatedAt=now()` 导致的幂等漂移
 
 #### P2-2. 迁移非任务附属数据
 
-- [ ] 迁移模型配置
-- [ ] 迁移技能索引与远程技能元数据
-- [ ] 迁移朝报配置
-- [ ] 迁移朝堂议政会话
-- [ ] 明确官员统计是运行时聚合还是持久化投影
+- [x] 迁移模型配置
+- [x] 迁移技能索引与远程技能元数据
+- [x] 迁移朝报配置
+- [x] 迁移朝堂议政会话
+- [x] 明确官员统计是运行时聚合还是持久化投影
 
 涉及文件：
 
@@ -802,6 +804,7 @@
 
 - 模型变更历史、朝报配置/快照、朝堂议政会话、派发渠道当前值已具备导入路径
 - 迁移器现已补充 `config.agent.snapshot` 与 `skill.inventory.snapshot`，可在提供 `--remote-root` 时盘点当前 agent config、本地技能索引与远程 skill metadata
+- `config.agent.snapshot` 现使用稳定 `generatedAt` 派生幂等键，重复导入会正确命中 skip，而不是被运行时当前时间扰动
 - `officials-stats` 已明确保持 `runtime-derived`，不作为持久化投影导入
 
 ### 15. 影子双跑与对账
@@ -935,7 +938,7 @@
 - [x] 已完成✅ `pytest tests/test_architecture_contracts.py -q`
 - [x] 已完成✅ `pytest tests/test_backend_dispatch.py -q`
 - [x] 已完成✅ 前端构建：`npm --prefix edict/frontend run build`
-- [ ] v2 集成测试：补充 FastAPI + Postgres + Redis 集成用例
+- [x] 已完成✅ 已新增 `tests/test_v2_backend_integration.py`，通过本机 Postgres + 临时 Redis 容器 + 本地 uvicorn backend 进程验证 `POST /api/tasks`、`/api/events`、`/api/live-status`、`/api/queue-metrics`、`/api/admin/health/deep` 的真实联通；执行命令：`EDICT_RUN_DOCKER_INTEGRATION=1 python3 -m pytest tests/test_v2_backend_integration.py -q`
 - [ ] 数据迁移 dry-run
 - [ ] 数据迁移正式导入后对账
 - [ ] 浏览器回归：任务看板、任务详情、模型配置、技能配置、朝报、朝堂议政、官员面板

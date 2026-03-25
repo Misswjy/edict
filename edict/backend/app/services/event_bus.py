@@ -369,7 +369,7 @@ class EventBus:
         meta: dict[str, Any],
         dedupe_key: str,
     ) -> tuple[Event, bool]:
-        async with self._session_factory() as session:
+        async with self._session_context() as session:
             from sqlalchemy import select
             from sqlalchemy.exc import IntegrityError
             from ..models.event import Event
@@ -412,7 +412,7 @@ class EventBus:
         return result.scalar_one_or_none()
 
     async def _mark_event_published(self, event_id: uuid.UUID, stream_entry_id: str) -> None:
-        async with self._session_factory() as session:
+        async with self._session_context() as session:
             from ..models.event import Event
 
             record = await session.get(Event, event_id)
@@ -435,7 +435,7 @@ class EventBus:
             if not content:
                 return
             agent = str(payload.get("agent") or producer.replace("agent.", "")).strip()
-            async with self._session_factory() as session:
+            async with self._session_context() as session:
                 from ..models.thought import Thought
 
                 session.add(
@@ -457,7 +457,7 @@ class EventBus:
         if topic == TOPIC_AGENT_TODO_UPDATE:
             from .activity_service import project_todos_snapshot
 
-            async with self._session_factory() as session:
+            async with self._session_context() as session:
                 await project_todos_snapshot(
                     session,
                     trace_id=trace_id,
@@ -473,6 +473,10 @@ class EventBus:
         from ..db import async_session
 
         return async_session
+
+    def _session_context(self):
+        factory = self._session_factory()
+        return factory if hasattr(factory, "__aenter__") else factory()
 
 
 # ── 全局单例 ──
