@@ -31,6 +31,7 @@ from ..event_contract import (
 )
 from ..models.task import Task
 from ..task_contract import (
+    STATE_LABELS,
     TERMINAL_STATES,
     ActorContext,
     TaskState,
@@ -625,6 +626,24 @@ class TaskService:
         }
 
     async def scheduler_retry(self, task_id: str, reason: str = "", actor: ActorContext | None = None) -> dict[str, Any]:
+        return await self._scheduler_retry_internal(
+            task_id,
+            reason=reason,
+            actor=actor,
+            dispatch_trigger="sili-retry",
+            automatic=False,
+        )
+
+    async def _scheduler_retry_internal(
+        self,
+        task_id: str,
+        *,
+        reason: str = "",
+        actor: ActorContext | None = None,
+        dispatch_trigger: str = "sili-retry",
+        automatic: bool = False,
+        stalled_sec: int = 0,
+    ) -> dict[str, Any]:
         actor = actor or make_actor_context("sili", source="scheduler")
         allowed, deny_reason = authorize_scheduler(actor, "retry")
         if not allowed:
@@ -637,18 +656,52 @@ class TaskService:
         sched = self._ensure_scheduler(task_dict)
         sched["retryCount"] = int(sched.get("retryCount") or 0) + 1
         sched["lastRetryAt"] = datetime.now(timezone.utc).isoformat()
-        sched["lastDispatchTrigger"] = "scheduler-retry"
-        self._scheduler_add_flow(task_dict, f"触发重试第{sched['retryCount']}次：{reason or '超时未推进'}")
+        sched["lastDispatchTrigger"] = dispatch_trigger
+        if automatic and stalled_sec > 0:
+            self._scheduler_add_flow(task_dict, f"停滞{int(stalled_sec)}秒，触发自动重试第{sched['retryCount']}次")
+        else:
+            self._scheduler_add_flow(task_dict, f"触发重试第{sched['retryCount']}次：{reason or '超时未推进'}")
+        agent = resolve_dispatch_agent(task_dict, state)
+        if agent:
+            dispatch_key = build_manual_dispatch_key(
+                task.id,
+                state,
+                int(task.state_version or 1),
+                agent,
+                request_id=actor.request_id,
+            )
+            self._record_dispatch_enqueued(
+                task_dict,
+                state=state,
+                target_agent=agent,
+                dispatch_key=dispatch_key,
+                trigger=dispatch_trigger,
+            )
         self._apply_task_dict(task, task_dict)
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
-        agent = resolve_dispatch_agent(task_dict, state)
         if agent:
             await self._publish_dispatch_request(task, actor, agent, message=f"司礼监调度重试：{reason or '请继续推进任务'}", manual=True)
         await self._audit("scheduler.retry", actor, True, task_id=task.id, from_state=state, to_state=state, payload={"reason": reason, "retryCount": sched["retryCount"]})
         return {"ok": True, "message": f"{task.id} 已触发重试派发", "retryCount": sched["retryCount"]}
 
     async def scheduler_escalate(self, task_id: str, reason: str = "", actor: ActorContext | None = None) -> dict[str, Any]:
+        return await self._scheduler_escalate_internal(
+            task_id,
+            reason=reason,
+            actor=actor,
+            automatic=False,
+        )
+
+    async def _scheduler_escalate_internal(
+        self,
+        task_id: str,
+        *,
+        reason: str = "",
+        actor: ActorContext | None = None,
+        automatic: bool = False,
+        stalled_sec: int = 0,
+    ) -> dict[str, Any]:
         actor = actor or make_actor_context("sili", source="scheduler")
         allowed, deny_reason = authorize_scheduler(actor, "escalate")
         if not allowed:
@@ -664,16 +717,29 @@ class TaskService:
         target_label = "门下省" if next_level == 1 else "尚书省"
         sched["escalationLevel"] = next_level
         sched["lastEscalatedAt"] = datetime.now(timezone.utc).isoformat()
-        self._scheduler_add_flow(task_dict, f"升级到{target_label}协调：{reason or '任务停滞'}", to=target_label)
+        if automatic and stalled_sec > 0:
+            self._scheduler_add_flow(task_dict, f"停滞{int(stalled_sec)}秒，升级至{target_label}协调", to=target_label)
+        else:
+            self._scheduler_add_flow(task_dict, f"升级到{target_label}协调：{reason or '任务停滞'}", to=target_label)
         self._apply_task_dict(task, task_dict)
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
+        message = self._build_scheduler_escalation_message(task.id, state, reason)
         await self.bus.publish(
             topic=TOPIC_TASK_ESCALATED,
             trace_id=task.id,
             event_type="task.scheduler.escalated",
             producer=actor.actor_id,
-            payload={"task_id": task.id, "state": state, "target": target, "reason": reason, "level": next_level, "task": task.to_dict()},
+            payload={
+                "task_id": task.id,
+                "state": state,
+                "target": target,
+                "targetLabel": target_label,
+                "reason": reason,
+                "level": next_level,
+                "message": message,
+                "task": task.to_dict(),
+            },
             meta=self._event_meta(actor, task, {"level": next_level}),
             dedupe_key=build_task_escalated_dedupe_key(task.id, int(task.state_version or 1), next_level),
         )
@@ -681,6 +747,24 @@ class TaskService:
         return {"ok": True, "message": f"{task.id} 已升级至{target_label}", "escalationLevel": next_level}
 
     async def scheduler_rollback(self, task_id: str, reason: str = "", actor: ActorContext | None = None) -> dict[str, Any]:
+        return await self._scheduler_rollback_internal(
+            task_id,
+            reason=reason,
+            actor=actor,
+            dispatch_trigger="sili-rollback",
+            automatic=False,
+        )
+
+    async def _scheduler_rollback_internal(
+        self,
+        task_id: str,
+        *,
+        reason: str = "",
+        actor: ActorContext | None = None,
+        dispatch_trigger: str = "sili-rollback",
+        automatic: bool = False,
+        stalled_sec: int = 0,
+    ) -> dict[str, Any]:
         actor = actor or make_actor_context("sili", source="scheduler")
         allowed, deny_reason = authorize_scheduler(actor, "rollback")
         if not allowed:
@@ -695,14 +779,35 @@ class TaskService:
         old_state = canonicalize_state(task_dict.get("state"))
         task_dict["state"] = snap_state
         task_dict["org"] = snapshot.get("org", task_dict.get("org", ""))
-        task_dict["now"] = f"↩️ 司礼监调度自动回滚：{reason or '恢复到上个稳定节点'}"
+        if automatic and stalled_sec > 0:
+            task_dict["now"] = "↩️ 司礼监调度自动回滚到稳定节点"
+        else:
+            task_dict["now"] = f"↩️ 司礼监调度自动回滚：{reason or '恢复到上个稳定节点'}"
         task_dict["block"] = "无"
         sched["retryCount"] = 0
         sched["escalationLevel"] = 0
         sched["stallSince"] = None
         sched["lastProgressAt"] = datetime.now(timezone.utc).isoformat()
-        self._scheduler_add_flow(task_dict, f"执行回滚：{old_state} → {snap_state}，原因：{reason or '停滞恢复'}")
+        if automatic and stalled_sec > 0:
+            self._scheduler_add_flow(task_dict, f"连续停滞，自动回滚：{old_state} → {snap_state}")
+        else:
+            self._scheduler_add_flow(task_dict, f"执行回滚：{old_state} → {snap_state}，原因：{reason or '停滞恢复'}")
         self._bump_state_version(task, task_dict)
+        dispatch_agent = resolve_dispatch_agent(task_dict, snap_state) if snap_state not in TERMINAL_STATES else ""
+        if dispatch_agent:
+            dispatch_key = build_auto_dispatch_key(
+                task.id,
+                snap_state,
+                int(task_dict.get("_stateVersion") or task.state_version or 1),
+                dispatch_agent,
+            )
+            self._record_dispatch_enqueued(
+                task_dict,
+                state=snap_state,
+                target_agent=dispatch_agent,
+                dispatch_key=dispatch_key,
+                trigger=dispatch_trigger,
+            )
         self._apply_task_dict(task, task_dict)
         task.state = TaskState(canonicalize_state(task_dict["state"]))
         task.updated_at = datetime.now(timezone.utc)
@@ -752,18 +857,38 @@ class TaskService:
             )
 
             if retry_count < max_retry:
-                result = await self.scheduler_retry(task.id, reason=f"停滞 {stalled_sec} 秒", actor=actor)
+                result = await self._scheduler_retry_internal(
+                    task.id,
+                    reason=f"停滞 {stalled_sec} 秒",
+                    actor=actor,
+                    dispatch_trigger="sili-scan-retry",
+                    automatic=True,
+                    stalled_sec=stalled_sec,
+                )
                 actions.append({"taskId": task.id, "action": "retry", "stalledSec": stalled_sec, "message": result["message"]})
                 continue
             if level < 2:
-                result = await self.scheduler_escalate(task.id, reason=f"停滞 {stalled_sec} 秒", actor=actor)
+                result = await self._scheduler_escalate_internal(
+                    task.id,
+                    reason=f"停滞 {stalled_sec} 秒",
+                    actor=actor,
+                    automatic=True,
+                    stalled_sec=stalled_sec,
+                )
                 actions.append({"taskId": task.id, "action": "escalate", "stalledSec": stalled_sec, "message": result["message"]})
                 continue
             if sched.get("autoRollback", True):
                 snapshot = sched.get("snapshot") or {}
                 snap_state = canonicalize_state(snapshot.get("state"))
                 if snap_state and snap_state != task.state.value:
-                    result = await self.scheduler_rollback(task.id, reason=f"停滞 {stalled_sec} 秒", actor=actor)
+                    result = await self._scheduler_rollback_internal(
+                        task.id,
+                        reason=f"停滞 {stalled_sec} 秒",
+                        actor=actor,
+                        dispatch_trigger="sili-auto-rollback",
+                        automatic=True,
+                        stalled_sec=stalled_sec,
+                    )
                     actions.append({"taskId": task.id, "action": "rollback", "toState": snap_state, "message": result["message"]})
 
         return {
@@ -998,6 +1123,40 @@ class TaskService:
             "savedAt": datetime.now(timezone.utc).isoformat(),
             "note": note or "snapshot",
         }
+
+    def _record_dispatch_enqueued(
+        self,
+        task_dict: dict[str, Any],
+        *,
+        state: str,
+        target_agent: str,
+        dispatch_key: str,
+        trigger: str,
+    ) -> None:
+        sched = self._ensure_scheduler(task_dict)
+        if sched.get("lastDispatchKey") == dispatch_key and sched.get("lastDispatchStatus") in {"queued", "success"}:
+            return
+        sched["lastDispatchAt"] = datetime.now(timezone.utc).isoformat()
+        sched["lastDispatchStatus"] = "queued"
+        sched["lastDispatchAgent"] = target_agent
+        sched["lastDispatchTrigger"] = trigger
+        sched["lastDispatchKey"] = dispatch_key
+        state_key = canonicalize_state(state)
+        self._scheduler_add_flow(
+            task_dict,
+            f"已入队派发：{state_key} → {target_agent}（{trigger}）",
+            to=STATE_LABELS.get(state_key, state_key),
+        )
+
+    def _build_scheduler_escalation_message(self, task_id: str, state: str, reason: str = "") -> str:
+        return (
+            "🧭 司礼监调度升级通知\n"
+            f"任务ID: {task_id}\n"
+            f"当前状态: {state}\n"
+            "停滞处理: 请你介入协调推进\n"
+            f"原因: {reason or '任务超过阈值未推进'}\n"
+            "⚠️ 看板已有任务，请勿重复创建。"
+        )
 
     def _scheduler_mark_progress(self, task_dict: dict[str, Any], note: str = "") -> None:
         sched = self._ensure_scheduler(task_dict)

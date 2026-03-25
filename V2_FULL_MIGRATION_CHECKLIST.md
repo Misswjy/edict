@@ -606,9 +606,9 @@
 
 #### P1-13. 对齐 legacy 调度策略
 
-- [ ] 对齐 `stallThresholdSec / maxRetry / escalationLevel / autoRollback / snapshot`
-- [ ] 对齐 flow_log 中的调度备注风格
-- [ ] 对齐门下省与尚书省中央队列指标
+- [x] 已完成✅ 对齐 `stallThresholdSec / maxRetry / escalationLevel / autoRollback / snapshot`
+- [x] 已完成✅ 对齐 flow_log 中的调度备注风格
+- [x] 已完成✅ 对齐门下省与尚书省中央队列指标
 
 涉及文件：
 
@@ -622,6 +622,13 @@
 风险点：
 
 - 如果 stallThreshold 计算改了但没同步文档和监控，行为会看起来“随机”
+
+落地结果：
+
+- `edict/backend/app/services/task_service.py` 已将 scheduler retry / escalate / rollback 拆分为 legacy parity 内部路径，补齐 `sili-retry`、`sili-scan-retry`、`sili-rollback`、`sili-auto-rollback` 等触发语义，并对齐自动重试、自动升级、自动回滚时的 `flow_log` 备注文案
+- v2 调度链路已补齐 `lastDispatchAt / lastDispatchStatus / lastDispatchAgent / lastDispatchTrigger / lastDispatchKey` 元数据写入；回滚后重新入队的 dispatch key 与 legacy 触发语义保持一致
+- `edict/backend/app/workers/orchestrator_worker.py` 已接管 `task.scheduler.escalated` 事件，对应协调方会收到与 legacy 一致的唤醒通知消息，不再只停留在事件落库
+- `tests/test_backend_dispatch.py` 已新增/更新 v2 parity 回归，覆盖调度升级唤醒、scan-retry 触发语义、自动回滚文案与中央队列指标；已验证 `python3 -m pytest tests/test_backend_dispatch.py -q`、`python3 -m pytest tests/test_architecture_contracts.py -q`、`python3 -m pytest tests/test_scheduler_worker.py -q`
 
 ---
 

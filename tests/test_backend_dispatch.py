@@ -162,6 +162,48 @@ def test_orchestrator_resolves_execution_agent_from_top_level_status_payload(mon
     assert calls[0]["payload"]["task"]["targetDept"] == "工部"
 
 
+def test_orchestrator_wakes_agent_on_scheduler_escalated_event(monkeypatch):
+    _stub_backend_config(monkeypatch)
+    from edict.backend.app.workers.orchestrator_worker import OrchestratorWorker
+
+    calls = []
+
+    class FakeAdminActions:
+        async def wake_agent(self, agent_id, message, actor, task_id=""):
+            calls.append(
+                {
+                    "agent_id": agent_id,
+                    "message": message,
+                    "actor_id": actor.actor_id,
+                    "request_id": actor.request_id,
+                    "task_id": task_id,
+                }
+            )
+            return {"ok": True, "message": "queued"}
+
+    worker = OrchestratorWorker()
+    worker.admin_actions = FakeAdminActions()
+
+    payload = {
+        "task_id": "JJC-TEST-ESC-1",
+        "state": "Doing",
+        "target": "menxia",
+        "reason": "停滞 600 秒",
+    }
+    meta = {"source": "scheduler", "request_id": "req-escalate-1"}
+
+    asyncio.run(worker._on_task_escalated(payload, meta, "JJC-TEST-ESC-1"))
+
+    assert len(calls) == 1
+    assert calls[0]["agent_id"] == "menxia"
+    assert calls[0]["actor_id"] == "sili"
+    assert calls[0]["request_id"] == "req-escalate-1"
+    assert calls[0]["task_id"] == "JJC-TEST-ESC-1"
+    assert "任务ID: JJC-TEST-ESC-1" in calls[0]["message"]
+    assert "当前状态: Doing" in calls[0]["message"]
+    assert "原因: 停滞 600 秒" in calls[0]["message"]
+
+
 def test_task_service_create_task_retries_on_id_collision(monkeypatch):
     _stub_backend_config(monkeypatch)
     task_service_module, fake_integrity_error = _import_task_service_with_stubs(monkeypatch)
@@ -521,12 +563,12 @@ def test_scheduler_scan_publishes_stalled_event_before_retry(monkeypatch):
 
     retries = []
 
-    async def fake_scheduler_retry(task_id, reason="", actor=None):
-        retries.append((task_id, reason, actor.actor_id if actor else ""))
+    async def fake_scheduler_retry(task_id, *, reason="", actor=None, dispatch_trigger="", automatic=False, stalled_sec=0):
+        retries.append((task_id, reason, actor.actor_id if actor else "", dispatch_trigger, automatic, stalled_sec))
         return {"ok": True, "message": "retried"}
 
     svc.list_tasks = fake_list_tasks
-    svc.scheduler_retry = fake_scheduler_retry
+    svc._scheduler_retry_internal = fake_scheduler_retry
 
     result = asyncio.run(svc.scheduler_scan(threshold_sec=60, actor=make_actor_context("sili", source="scheduler")))
 
@@ -536,6 +578,9 @@ def test_scheduler_scan_publishes_stalled_event_before_retry(monkeypatch):
     assert retries[0][0] == "JJC-TEST-STALL-1"
     assert "停滞" in retries[0][1]
     assert retries[0][2] == "sili"
+    assert retries[0][3] == "sili-scan-retry"
+    assert retries[0][4] is True
+    assert retries[0][5] >= 300
     assert len(svc.bus.calls) == 1
     stalled_event = svc.bus.calls[0]
     assert stalled_event["topic"] == "task.stalled"
@@ -544,3 +589,271 @@ def test_scheduler_scan_publishes_stalled_event_before_retry(monkeypatch):
     assert stalled_event["payload"]["retryCount"] == 0
     assert stalled_event["payload"]["thresholdSec"] == 60
     assert stalled_event["payload"]["stalledSec"] >= 300
+
+
+def test_scheduler_retry_records_legacy_dispatch_metadata(monkeypatch):
+    _stub_backend_config(monkeypatch)
+    task_service_module, _ = _import_task_service_with_stubs(monkeypatch)
+    from edict.backend.app.task_contract import TaskState, make_actor_context
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class FakeBus:
+        def __init__(self):
+            self.calls = []
+
+        async def publish(self, **kwargs):
+            self.calls.append(kwargs)
+            return "1-0"
+
+    svc = task_service_module.TaskService(FakeSession(), FakeBus())
+    now = datetime.now(timezone.utc)
+    task = task_service_module.Task(
+        id="JJC-TEST-RETRY-1",
+        title="重试任务",
+        official="工部尚书",
+        org="工部",
+        state=TaskState.Doing,
+        now="处理中",
+        eta="-",
+        block="无",
+        output="",
+        ac="",
+        priority="normal",
+        lane="standard",
+        review_round=0,
+        archived=False,
+        template_id="",
+        template_params={},
+        target_dept="工部",
+        prev_state="",
+        state_version=4,
+        flow_log=[],
+        progress_log=[],
+        consult_log=[],
+        todos=[],
+        scheduler={
+            "enabled": True,
+            "stallThresholdSec": 60,
+            "maxRetry": 2,
+            "retryCount": 0,
+            "escalationLevel": 0,
+            "autoRollback": True,
+            "lastProgressAt": (now - timedelta(minutes=5)).isoformat(),
+            "stallSince": None,
+        },
+        created_at=now - timedelta(hours=1),
+        updated_at=now - timedelta(minutes=5),
+    )
+
+    async def fake_get_task(task_id, for_update=False):
+        assert task_id == "JJC-TEST-RETRY-1"
+        return task
+
+    svc._get_task = fake_get_task
+
+    result = asyncio.run(
+        svc.scheduler_retry(
+            "JJC-TEST-RETRY-1",
+            reason="超时未推进",
+            actor=make_actor_context("sili", source="scheduler"),
+        )
+    )
+
+    assert result["ok"] is True
+    assert task.scheduler["retryCount"] == 1
+    assert task.scheduler["lastDispatchTrigger"] == "sili-retry"
+    assert task.scheduler["lastDispatchStatus"] == "queued"
+    assert task.scheduler["lastDispatchAgent"] == "gongbu"
+    assert task.scheduler["lastDispatchKey"].startswith("manual:JJC-TEST-RETRY-1:Doing:v4:gongbu:")
+    assert any("触发重试第1次" in entry["remark"] for entry in task.flow_log)
+    assert any("已入队派发：Doing → gongbu（sili-retry）" in entry["remark"] for entry in task.flow_log)
+    assert len(svc.bus.calls) == 1
+    assert svc.bus.calls[0]["payload"]["agent"] == "gongbu"
+
+
+def test_scheduler_rollback_auto_mode_uses_legacy_scan_copy(monkeypatch):
+    _stub_backend_config(monkeypatch)
+    task_service_module, _ = _import_task_service_with_stubs(monkeypatch)
+    from edict.backend.app.task_contract import TaskState, make_actor_context
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class FakeBus:
+        async def publish(self, **kwargs):
+            return "1-0"
+
+    svc = task_service_module.TaskService(FakeSession(), FakeBus())
+    now = datetime.now(timezone.utc)
+    task = task_service_module.Task(
+        id="JJC-TEST-ROLLBACK-1",
+        title="回滚任务",
+        official="尚书令",
+        org="尚书省",
+        state=TaskState.Review,
+        now="等待审查",
+        eta="-",
+        block="无",
+        output="",
+        ac="",
+        priority="normal",
+        lane="standard",
+        review_round=0,
+        archived=False,
+        template_id="",
+        template_params={},
+        target_dept="工部",
+        prev_state="",
+        state_version=5,
+        flow_log=[],
+        progress_log=[],
+        consult_log=[],
+        todos=[],
+        scheduler={
+            "enabled": True,
+            "stallThresholdSec": 60,
+            "maxRetry": 2,
+            "retryCount": 2,
+            "escalationLevel": 2,
+            "autoRollback": True,
+            "lastProgressAt": (now - timedelta(minutes=12)).isoformat(),
+            "stallSince": (now - timedelta(minutes=11)).isoformat(),
+            "snapshot": {
+                "state": "Doing",
+                "org": "工部",
+                "now": "处理中",
+                "savedAt": (now - timedelta(minutes=20)).isoformat(),
+                "note": "before-review",
+            },
+        },
+        created_at=now - timedelta(hours=2),
+        updated_at=now - timedelta(minutes=12),
+    )
+
+    published = []
+
+    async def fake_get_task(task_id, for_update=False):
+        assert task_id == "JJC-TEST-ROLLBACK-1"
+        return task
+
+    async def fake_publish_state_event(task_obj, actor, from_state, reason, transition_kind="transition"):
+        published.append((task_obj.id, from_state, reason, transition_kind))
+
+    svc._get_task = fake_get_task
+    svc._publish_state_event = fake_publish_state_event
+
+    result = asyncio.run(
+        svc._scheduler_rollback_internal(
+            "JJC-TEST-ROLLBACK-1",
+            reason="停滞 720 秒",
+            actor=make_actor_context("sili", source="scheduler"),
+            dispatch_trigger="sili-auto-rollback",
+            automatic=True,
+            stalled_sec=720,
+        )
+    )
+
+    assert result["ok"] is True
+    assert task.state.value == "Doing"
+    assert task.now == "↩️ 司礼监调度自动回滚到稳定节点"
+    assert task.scheduler["retryCount"] == 0
+    assert task.scheduler["escalationLevel"] == 0
+    assert task.scheduler["lastDispatchTrigger"] == "sili-auto-rollback"
+    assert task.scheduler["lastDispatchStatus"] == "queued"
+    assert task.scheduler["lastDispatchAgent"] == "gongbu"
+    assert task.scheduler["lastDispatchKey"] == "auto:JJC-TEST-ROLLBACK-1:Doing:v6:gongbu"
+    assert any("连续停滞，自动回滚：Review → Doing" in entry["remark"] for entry in task.flow_log)
+    assert any("已入队派发：Doing → gongbu（sili-auto-rollback）" in entry["remark"] for entry in task.flow_log)
+    assert published == [("JJC-TEST-ROLLBACK-1", "Review", "停滞 720 秒", "rollback")]
+
+
+def test_v2_queue_metrics_reports_central_backlog_and_fast_lane(monkeypatch):
+    _stub_backend_config(monkeypatch)
+    task_service_module, _ = _import_task_service_with_stubs(monkeypatch)
+    from edict.backend.app.task_contract import TaskState
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class FakeBus:
+        async def publish(self, **kwargs):
+            return "1-0"
+
+    svc = task_service_module.TaskService(FakeSession(), FakeBus())
+    now = datetime.now(timezone.utc)
+    tasks = [
+        task_service_module.Task(
+            id="JJC-QUEUE-V2-001",
+            title="门下审议",
+            official="给事中",
+            org="门下省",
+            state=TaskState.Menxia,
+            now="等待审议",
+            eta="-",
+            block="无",
+            output="",
+            ac="",
+            priority="normal",
+            lane="fast",
+            review_round=0,
+            archived=False,
+            template_id="",
+            template_params={},
+            target_dept="",
+            prev_state="",
+            state_version=1,
+            flow_log=[],
+            progress_log=[],
+            consult_log=[],
+            todos=[],
+            scheduler={},
+            created_at=now - timedelta(hours=1),
+            updated_at=now - timedelta(minutes=11),
+        ),
+        task_service_module.Task(
+            id="JJC-QUEUE-V2-002",
+            title="尚书派发",
+            official="尚书令",
+            org="尚书省",
+            state=TaskState.Assigned,
+            now="等待派发",
+            eta="-",
+            block="无",
+            output="",
+            ac="",
+            priority="normal",
+            lane="standard",
+            review_round=0,
+            archived=False,
+            template_id="",
+            template_params={},
+            target_dept="工部",
+            prev_state="",
+            state_version=1,
+            flow_log=[],
+            progress_log=[],
+            consult_log=[],
+            todos=[],
+            scheduler={},
+            created_at=now - timedelta(hours=1),
+            updated_at=now - timedelta(minutes=20),
+        ),
+    ]
+
+    async def fake_list_tasks(limit=500):
+        return tasks
+
+    svc.list_tasks = fake_list_tasks
+
+    metrics = asyncio.run(svc.get_queue_metrics())
+
+    assert metrics["ok"] is True
+    assert metrics["queues"]["menxia"]["waiting"] == 1
+    assert metrics["queues"]["menxia"]["fastLane"] == 1
+    assert metrics["queues"]["shangshu"]["waiting"] == 1
+    assert metrics["queues"]["shangshu"]["oldestWaitSec"] >= 1200

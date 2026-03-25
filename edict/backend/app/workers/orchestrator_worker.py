@@ -16,14 +16,16 @@ import asyncio
 import logging
 import signal
 
-from ..task_contract import TaskState, build_dispatch_key, resolve_dispatch_agent
+from ..task_contract import TaskState, build_dispatch_key, make_actor_context, resolve_dispatch_agent
+from ..services.admin_action_service import AdminActionService
 from ..services.event_bus import (
     EventBus,
     TOPIC_TASK_CREATED,
-    TOPIC_TASK_STATUS,
-    TOPIC_TASK_DISPATCH,
     TOPIC_TASK_COMPLETED,
+    TOPIC_TASK_DISPATCH,
+    TOPIC_TASK_ESCALATED,
     TOPIC_TASK_STALLED,
+    TOPIC_TASK_STATUS,
 )
 
 log = logging.getLogger("edict.orchestrator")
@@ -36,6 +38,7 @@ WATCHED_TOPICS = [
     TOPIC_TASK_CREATED,
     TOPIC_TASK_STATUS,
     TOPIC_TASK_COMPLETED,
+    TOPIC_TASK_ESCALATED,
     TOPIC_TASK_STALLED,
 ]
 
@@ -45,6 +48,7 @@ class OrchestratorWorker:
 
     def __init__(self):
         self.bus = EventBus()
+        self.admin_actions = AdminActionService()
         self._running = False
 
     async def start(self):
@@ -123,6 +127,8 @@ class OrchestratorWorker:
             await self._on_task_status(event_type, payload, meta, trace_id)
         elif topic == TOPIC_TASK_COMPLETED:
             await self._on_task_completed(payload, trace_id)
+        elif topic == TOPIC_TASK_ESCALATED:
+            await self._on_task_escalated(payload, meta, trace_id)
         elif topic == TOPIC_TASK_STALLED:
             await self._on_task_stalled(payload, trace_id)
 
@@ -191,11 +197,49 @@ class OrchestratorWorker:
         task_id = payload.get("task_id")
         log.info(f"🎉 Task {task_id} completed. trace={trace_id}")
 
+    async def _on_task_escalated(self, payload: dict, meta: dict, trace_id: str):
+        """调度升级 → 唤醒对应协调方介入。"""
+        task_id = str(payload.get("task_id") or "")
+        target = str(payload.get("target") or "").strip()
+        if not target:
+            log.warning("scheduler escalated event missing target trace=%s task=%s", trace_id, task_id)
+            return
+        message = str(payload.get("message") or self._build_escalation_message(payload)).strip()
+        actor = make_actor_context(
+            "sili",
+            source=str(meta.get("source") or "scheduler"),
+            request_id=str(meta.get("request_id") or ""),
+        )
+        result = await self.admin_actions.wake_agent(target, message, actor, task_id=task_id)
+        if result.get("ok"):
+            log.info("📣 Escalation wake sent task=%s target=%s trace=%s", task_id, target, trace_id)
+        else:
+            log.warning(
+                "⚠️ Escalation wake failed task=%s target=%s trace=%s error=%s",
+                task_id,
+                target,
+                trace_id,
+                result.get("error", "unknown"),
+            )
+
     async def _on_task_stalled(self, payload: dict, trace_id: str):
         """任务停滞 → 通知尚书或重新派发。"""
         task_id = payload.get("task_id")
         log.warning(f"⏸️ Task {task_id} stalled! Requesting intervention. trace={trace_id}")
         # TODO: 实现停滞任务的自动恢复策略
+
+    def _build_escalation_message(self, payload: dict) -> str:
+        task_id = str(payload.get("task_id") or "")
+        state = str(payload.get("state") or "")
+        reason = str(payload.get("reason") or "任务超过阈值未推进")
+        return (
+            "🧭 司礼监调度升级通知\n"
+            f"任务ID: {task_id}\n"
+            f"当前状态: {state}\n"
+            "停滞处理: 请你介入协调推进\n"
+            f"原因: {reason}\n"
+            "⚠️ 看板已有任务，请勿重复创建。"
+        )
 
     async def _publish_dispatch(
         self,
