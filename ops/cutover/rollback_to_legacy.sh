@@ -53,6 +53,23 @@ run_cmd() {
   fi
 }
 
+http_check() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS "$url" >/dev/null
+    return 0
+  fi
+  python3 - "$url" <<'PY'
+import sys
+import urllib.request
+
+url = sys.argv[1]
+with urllib.request.urlopen(url, timeout=10) as response:
+    if response.status >= 400:
+        raise SystemExit(1)
+PY
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute)
@@ -184,7 +201,11 @@ log "phase 4/7: unfreeze legacy write marker"
 run_cmd rm -f "$FREEZE_MARKER"
 
 log "phase 5/7: rollback-window data reinjection placeholder"
-run_cmd bash ops/cutover/reinject_tasks_placeholder.sh --backup-dir "$BACKUP_DIR"
+reinject_cmd=(bash ops/cutover/reinject_tasks_placeholder.sh --backup-dir "$BACKUP_DIR")
+if [[ "$EXECUTE" -eq 1 ]]; then
+  reinject_cmd+=(--execute)
+fi
+run_cmd "${reinject_cmd[@]}"
 
 log "phase 6/7: optional legacy runtime restart"
 if [[ "$START_LEGACY" -eq 1 ]]; then
@@ -209,14 +230,10 @@ else
 fi
 
 if [[ "$EXECUTE" -eq 1 ]]; then
-  if command -v curl >/dev/null 2>&1; then
-    if curl -fsS "$LEGACY_API_URL/healthz" >/dev/null 2>&1; then
-      log "legacy health check passed: $LEGACY_API_URL/healthz"
-    else
-      log "WARN: legacy health check failed: $LEGACY_API_URL/healthz"
-    fi
+  if http_check "$LEGACY_API_URL/healthz" >/dev/null 2>&1; then
+    log "legacy health check passed: $LEGACY_API_URL/healthz"
   else
-    log "WARN: curl not found, skip HTTP checks"
+    log "WARN: legacy health check failed: $LEGACY_API_URL/healthz"
   fi
 else
   log "[dry-run] curl -fsS $LEGACY_API_URL/healthz"

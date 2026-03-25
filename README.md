@@ -276,12 +276,12 @@ docker run -p 7891:7891 cft0808/sansheng-demo
 exec /usr/local/bin/python3: exec format error
 ```
 
-这是因为镜像架构不匹配。请使用 `--platform` 参数：
+这是因为镜像架构不匹配。请在 **x86/amd64** 主机上显式指定 `--platform`：
 ```bash
 docker run --platform linux/amd64 -p 7891:7891 cft0808/sansheng-demo
 ```
 
-或使用 docker-compose（已内置 `platform: linux/amd64`）：
+如果你在 **ARM Mac (M1/M2/M3)**，不要强行加 `--platform linux/amd64`，直接运行：
 ```bash
 docker compose up
 ```
@@ -645,10 +645,10 @@ curl -X POST http://127.0.0.1:7891/api/scheduler-scan \
 
 **解决**：
 ```bash
-# 方法 1：指定平台
+# 方法 1：x86/amd64 主机显式指定平台
 docker run --platform linux/amd64 -p 7891:7891 cft0808/sansheng-demo
 
-# 方法 2：使用 docker-compose（已内置 platform）
+# 方法 2：ARM Mac 直接使用默认架构
 docker compose up
 ```
 

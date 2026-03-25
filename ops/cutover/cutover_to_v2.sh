@@ -49,6 +49,23 @@ run_cmd() {
   fi
 }
 
+http_check() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS "$url" >/dev/null
+    return 0
+  fi
+  python3 - "$url" <<'PY'
+import sys
+import urllib.request
+
+url = sys.argv[1]
+with urllib.request.urlopen(url, timeout=10) as response:
+    if response.status >= 400:
+        raise SystemExit(1)
+PY
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute)
@@ -202,16 +219,15 @@ log "legacy_observation=$LEGACY_OBSERVATION"
 
 log "phase 5/5: post-cutover smoke checks"
 if [[ "$EXECUTE" -eq 1 ]]; then
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsS "$V2_API_URL/health" >/dev/null
+  if http_check "$V2_API_URL/health" >/dev/null 2>&1; then
     log "health check passed: $V2_API_URL/health"
-    if curl -fsS "$V2_API_URL/api/admin/health/deep" >/dev/null 2>&1; then
-      log "deep health check passed: $V2_API_URL/api/admin/health/deep"
-    else
-      log "WARN: deep health check failed (auth policy may block this endpoint)"
-    fi
   else
-    log "WARN: curl not found, skip HTTP checks"
+    log "WARN: health check failed: $V2_API_URL/health"
+  fi
+  if http_check "$V2_API_URL/api/admin/health/deep" >/dev/null 2>&1; then
+    log "deep health check passed: $V2_API_URL/api/admin/health/deep"
+  else
+    log "WARN: deep health check failed (auth policy may block this endpoint)"
   fi
 else
   log "[dry-run] curl -fsS $V2_API_URL/health"

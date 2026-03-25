@@ -941,13 +941,15 @@
 - [x] 已完成✅ 已新增 `tests/test_v2_backend_integration.py`，通过本机 Postgres + 临时 Redis 容器 + 本地 uvicorn backend 进程验证 `POST /api/tasks`、`/api/events`、`/api/live-status`、`/api/queue-metrics`、`/api/admin/health/deep` 的真实联通；执行命令：`EDICT_RUN_DOCKER_INTEGRATION=1 python3 -m pytest tests/test_v2_backend_integration.py -q`
 - [x] 已完成✅ 数据迁移 dry-run
 - [x] 已完成✅ 数据迁移正式导入后对账
-- [ ] 浏览器回归：任务看板、任务详情、模型配置、技能配置、朝报、朝堂议政、官员面板
+- [x] 已完成✅ 浏览器回归：任务看板、任务详情、模型配置、技能配置、朝报、朝堂议政、官员面板
 
 当前验收证据：
 
 - `ops/tests/validate_migration_flow.sh` 已通过临时 Postgres + Alembic + `edict/migration/migrate_json_to_pg.py` 完成 dry-run / 正式导入 / reconciliation 闭环校验
 - 当前仓库 `data/tasks_source.json` 为空数组，因此本轮正式导入对账结果为 `sourceTotal=0 / processedTotal=0 / migrated=0 / skipped=0 / errors=0`
 - 现有 sidecar 数据仍完成导入验证：`dispatchChannel.imported=1`、`agentConfigSnapshot.imported=1`
+- `ops/tests/browser_regression_v2.py` 已对运行中的本地 v2 stack 完成浏览器回归，覆盖任务看板、任务详情、模型配置、技能配置、天下要闻、朝堂议政 setup/session、官员总览
+- 浏览器回归产物已落到 `ops/artifacts/browser-regression-v2/`：包含 `01-edict-board.png` ~ `08-officials-panel.png` 与 `summary.json`
 
 ### 17.2 业务回归路径
 
@@ -986,10 +988,12 @@
 
 ### 18.1 切流前准备
 
-- [ ] 备份 `data/` 目录
-- [ ] 导出 Postgres 逻辑备份
-- [ ] 备份 Redis AOF / RDB
-- [ ] 冻结一个可回退的 legacy tag 或镜像
+- [x] 已完成✅ 备份 `data/` 目录（`/tmp/edict-backups/20260325T084044Z/data/data.tar.gz`）
+- [x] 已完成✅ 导出 Postgres 逻辑备份（`/tmp/edict-backups/20260325T084044Z/postgres/edict.dump`）
+- [x] 已完成✅ 备份 Redis AOF / RDB（`/tmp/edict-backups/20260325T084044Z/redis/dump.rdb`，已验证 host 无 `redis-cli` 时容器 fallback 可用）
+- [x] 已完成✅ 冻结一个可回退的 legacy tag 或镜像（`cft0808/sansheng-demo@sha256:e5e5f1c1db158c01356f2a946626c90bc61e4b092044ec6344a1b1ff0222d453`，inspect 落盘到 `/tmp/edict-backups/20260325T084044Z/metadata/legacy.image.inspect.json`）
+
+补充证据：已整理到 [ops/artifacts/cutover-rehearsal-20260325.md](ops/artifacts/cutover-rehearsal-20260325.md)。
 
 ### 18.2 切流时回滚触发条件
 
@@ -1006,8 +1010,15 @@
 - [ ] 先冻结 v2 写流量
 - [ ] 恢复前端到 legacy API
 - [ ] 恢复 legacy scheduler / loop
-- [ ] 将最近一次可用快照恢复到 `data/tasks_source.json`
+- [x] 已完成✅ 将最近一次可用快照恢复到 `data/tasks_source.json`（已于 2026-03-25 执行 `ops/cutover/rollback_to_legacy.sh --execute`，从 `/tmp/edict-backups/20260325T084044Z/data/data.tar.gz` 恢复）
 - [ ] 根据需要回灌 v2 期间新增任务
+
+本地回滚演练状态：
+
+- 已执行 `ops/cutover/rollback_to_legacy.sh --execute`，并生成 `/tmp/edict-rollback-rehearsal/stage-manifest.json`、`/tmp/edict-rollback-rehearsal/.env.production.local`、`ops/cutover/v2_delta.latest.json`、`ops/cutover/tasks_source.merged.json`、`ops/cutover/reinject_merge_report.json`、`ops/cutover/reinject_plan.md`
+- 已验证 legacy 镜像可拉起并通过 `http://127.0.0.1:7891/healthz`
+- 当前本地演练未覆盖 compose 管理的 v2 停服 / frontend 容器回切，因此前三项保持未勾选
+- 当前本地快照导出结果为 `tasksSnapshotTotal=0`、`deltaTasksExported=0`，回灌脚手架已执行，但尚未覆盖“非空 delta 合并”场景，因此“根据需要回灌”保持未勾选
 
 ### 18.4 回滚窗口结束条件
 

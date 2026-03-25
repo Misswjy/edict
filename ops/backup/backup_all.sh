@@ -6,6 +6,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-ops/backups}"
 DATA_DIR="${DATA_DIR:-data}"
 PG_DSN="${PG_DSN:-postgresql://edict:edict_dev_2024@127.0.0.1:5432/edict}"
 REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
+REDIS_CONTAINER="${REDIS_CONTAINER:-}"
 LEGACY_IMAGE="${LEGACY_IMAGE:-}"
 COMPOSE_FILE="${COMPOSE_FILE:-edict/docker-compose.yml}"
 INCLUDE_IMAGE_TAR=0
@@ -20,6 +21,7 @@ Options:
   --data-dir <dir>              Legacy data directory (default: data)
   --pg-dsn <dsn>                Postgres DSN for pg_dump
   --redis-url <url>             Redis URL for redis-cli
+  --redis-container <name>      Optional docker container name for redis-cli fallback
   --legacy-image <ref>          Legacy image/tag reference to snapshot
   --include-image-tar           Save docker image tarball when --legacy-image is set
   --compose-file <file>         v2 compose file (default: edict/docker-compose.yml)
@@ -44,6 +46,58 @@ run_cmd() {
   fi
 }
 
+resolve_redis_container() {
+  if [[ -n "$REDIS_CONTAINER" ]]; then
+    printf '%s\n' "$REDIS_CONTAINER"
+    return 0
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local redis_port=""
+  if [[ "$REDIS_URL" =~ ^redis://[^:/?#]+:([0-9]+) ]]; then
+    redis_port="${BASH_REMATCH[1]}"
+  fi
+  if [[ -z "$redis_port" ]]; then
+    return 1
+  fi
+
+  local matched_container=""
+  local container_name=""
+  while IFS= read -r container_name; do
+    [[ -n "$container_name" ]] || continue
+    local port_mapping=""
+    port_mapping="$(docker port "$container_name" 6379/tcp 2>/dev/null || true)"
+    if printf '%s\n' "$port_mapping" | grep -Eq "[:.]${redis_port}$"; then
+      if [[ -n "$matched_container" ]]; then
+        return 1
+      fi
+      matched_container="$container_name"
+    fi
+  done < <(docker ps --format '{{.Names}}')
+
+  if [[ -n "$matched_container" ]]; then
+    printf '%s\n' "$matched_container"
+    return 0
+  fi
+  return 1
+}
+
+backup_redis_with_container() {
+  local container_name="$1"
+  if [[ "$EXECUTE" -eq 1 ]]; then
+    log "+ docker exec $container_name redis-cli INFO persistence > $BACKUP_DIR/redis/persistence_info.txt"
+    docker exec "$container_name" redis-cli INFO persistence > "$BACKUP_DIR/redis/persistence_info.txt" || true
+    log "+ docker exec $container_name sh -lc 'tmp=/tmp/redis-backup.\$\$.rdb; rm -f \"\$tmp\"; redis-cli --rdb \"\$tmp\" >/dev/null 2>&1 && cat \"\$tmp\" && rm -f \"\$tmp\"' > $BACKUP_DIR/redis/dump.rdb"
+    docker exec "$container_name" sh -lc 'tmp=/tmp/redis-backup.$$.rdb; rm -f "$tmp"; redis-cli --rdb "$tmp" >/dev/null 2>&1 && cat "$tmp" && rm -f "$tmp"' > "$BACKUP_DIR/redis/dump.rdb" || true
+  else
+    log "[dry-run] docker exec $container_name redis-cli INFO persistence > $BACKUP_DIR/redis/persistence_info.txt"
+    log "[dry-run] docker exec $container_name sh -lc 'tmp=/tmp/redis-backup.\$\$.rdb; rm -f \"\$tmp\"; redis-cli --rdb \"\$tmp\" >/dev/null 2>&1 && cat \"\$tmp\" && rm -f \"\$tmp\"' > $BACKUP_DIR/redis/dump.rdb"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute)
@@ -64,6 +118,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --redis-url)
       REDIS_URL="${2:?missing value}"
+      shift 2
+      ;;
+    --redis-container)
+      REDIS_CONTAINER="${2:?missing value}"
       shift 2
       ;;
     --legacy-image)
@@ -123,7 +181,13 @@ if command -v redis-cli >/dev/null 2>&1; then
     log "[dry-run] redis-cli -u $REDIS_URL --rdb $BACKUP_DIR/redis/dump.rdb"
   fi
 else
-  log "WARN: redis-cli not found, skipping Redis snapshot"
+  REDIS_CONTAINER_FALLBACK="$(resolve_redis_container || true)"
+  if [[ -n "$REDIS_CONTAINER_FALLBACK" ]]; then
+    log "redis-cli not found on host; using docker fallback via container: $REDIS_CONTAINER_FALLBACK"
+    backup_redis_with_container "$REDIS_CONTAINER_FALLBACK"
+  else
+    log "WARN: redis-cli not found, skipping Redis snapshot"
+  fi
 fi
 
 if [[ -f "$COMPOSE_FILE" ]]; then
@@ -176,4 +240,3 @@ EOF
 fi
 
 log "done"
-
