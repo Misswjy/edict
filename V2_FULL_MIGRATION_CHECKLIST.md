@@ -636,9 +636,9 @@
 
 #### P1-14. 将前端切到单一 v2 API base
 
-- [ ] 去掉前端对 legacy 默认同源 API 的依赖
-- [ ] 将所有读取与写入统一收敛到 FastAPI
-- [ ] 保留 WebSocket 优先，HTTP fallback 次之
+- [x] 已完成✅ 去掉前端对 legacy 默认同源 API 的依赖
+- [x] 已完成✅ 将所有读取与写入统一收敛到 FastAPI
+- [x] 已完成✅ 保留 WebSocket 优先，HTTP fallback 次之
 
 涉及文件：
 
@@ -656,11 +656,18 @@
 
 - 响应 shape 微小差异就可能导致前端静默异常，需要完整 UI 回归
 
+落地结果：
+
+- `edict/frontend/src/api.ts` 已移除 `VITE_EDICT_CONTROL_PLANE_URL` / `CONTROL_PLANE_BASE` 双基址模型，所有 HTTP 接口统一改为由单一 `VITE_API_URL` 推导的 `buildApiUrl()` 生成
+- WebSocket 连接已改为从同一 `VITE_API_URL` 推导，不再依赖 legacy 同源 dashboard/server 或独立控制面地址；`store.ts` 与 `TaskModal.tsx` 继续保持 WebSocket 优先、轮询兜底
+- `edict/docker-compose.yml` 已收口前端环境变量，只保留 `VITE_API_URL`，去掉未使用的 `VITE_WS_URL`
+- 已验证 `npm --prefix edict/frontend run build`
+
 #### P1-15. 前端类型与 UI 状态统一
 
-- [ ] 对齐 `Task`、`FlowEntry`、`ProgressEntry`、`TodoItem` 等类型
-- [ ] 对齐心跳状态、监控面板、官方统计、朝报、技能配置等面板的数据结构
-- [ ] 确保 `live-status` 返回结构稳定
+- [x] 已完成✅ 对齐 `Task`、`FlowEntry`、`ProgressEntry`、`TodoItem` 等类型
+- [x] 已完成✅ 对齐心跳状态、监控面板、官方统计、朝报、技能配置等面板的数据结构
+- [x] 已完成✅ 确保 `live-status` 返回结构稳定
 
 涉及文件：
 
@@ -675,6 +682,13 @@
 风险点：
 
 - `live-status` 是多个面板共享入口，一旦结构漂移会产生连锁故障
+
+落地结果：
+
+- `edict/frontend/src/api.ts` 已新增前端 read-model adapter，统一归一 `Task / FlowEntry / ProgressEntry / TodoItem / ActivityEntry / SchedulerStateData`
+- `live-status`、`task-activity`、`scheduler-state`、`agent-config`、`model-change-log`、`officials-stats`、`agents-status`、`morning-brief`、`morning-config`、`remote-skills-list`、`skill-content` 现在都会先归一后再进入 UI，组件不再直接消费兼容态返回
+- 心跳状态、监控面板、官员总览、模型配置、技能配置、朝报面板的主要入口数据已补齐稳定默认值，减少 snake_case / camelCase、空数组 / 空对象、缺省字段导致的静默渲染异常
+- 已验证 `npm --prefix edict/frontend run build`
 
 ---
 
