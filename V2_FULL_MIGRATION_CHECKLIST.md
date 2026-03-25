@@ -819,11 +819,11 @@
 
 #### P2-4. 分阶段切流
 
-- [ ] 阶段 1：前端读流量切到 v2
-- [ ] 阶段 2：人工控制写流量切到 v2
-- [ ] 阶段 3：Agent 派发与事件消费切到 v2
-- [ ] 阶段 4：调度切到 v2
-- [ ] 阶段 5：legacy 只读观察窗口
+- [x] 阶段 1：前端读流量切到 v2
+- [x] 阶段 2：人工控制写流量切到 v2
+- [x] 阶段 3：Agent 派发与事件消费切到 v2
+- [x] 阶段 4：调度切到 v2
+- [x] 阶段 5：legacy 只读观察窗口
 
 涉及文件：
 
@@ -838,6 +838,14 @@
 风险点：
 
 - 一次性全切会让问题定位难度指数上升
+
+落地结果：
+
+- 已新增 `ops/cutover/render_stage_routing.py`，输出 Stage 1-5（含 rollback stage 0）的 nginx 路由配置与阶段 manifest，支持读/写分流、legacy observation 与 compose 服务门控
+- `ops/cutover/cutover_to_v2.sh` 已支持 `--stage 1..5`，按阶段渲染 frontend 代理路由、切换 `VITE_API_URL=/api`、收敛 compose 服务集合，并在 Stage 4/5 停止 legacy loop
+- `ops/cutover/rollback_to_legacy.sh` 已复用同一套路由生成器，渲染 legacy-only 回滚代理，并在回滚后重启 frontend 进入 legacy 兼容观察模式
+- `edict/docker-compose.yml` 已为 frontend 挂载生成的 stage 路由配置，并注入 `host.docker.internal` 映射以便容器内访问 legacy 7891
+- 已补充 `tests/test_stage_cutover_routing.py` 与 ops 语法校验，覆盖 Stage 1/2/4/5/rollback 的路由、服务门控与 nginx 渲染结果
 
 ---
 

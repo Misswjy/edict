@@ -3,6 +3,7 @@
 This directory contains migration-operation scaffolding for:
 - `P0-3` cutover and rollback gates
 - `P1-17` alert templates
+- `P2-4` staged cutover documentation and validation hooks
 
 Defaults are non-destructive:
 - Most scripts run in dry-run mode by default.
@@ -19,25 +20,72 @@ Defaults are non-destructive:
 - `ops/cutover/reinject_tasks_placeholder.sh`: orchestrate export+merge and emit reinjection plan evidence.
 - `ops/alerts/prometheus-rules.example.yml`: baseline alert rules template.
 - `ops/alerts/README.md`: alert metric mapping and rollout notes.
+- `ops/tests/validate_ops_syntax.sh`: shell/python syntax checks plus runbook consistency checks.
+- `ops/tests/validate_cutover_docs.sh`: staged cutover document keyword checks (Stage 1-5).
 
-## Quick Start
+## P2-4 Staged Cutover Model (Stage 1-5)
+
+The target migration model follows five stages from `V2_FULL_MIGRATION_CHECKLIST.md`.
+Current cutover scripts render stage-aware frontend proxy config and converge compose services for each stage.
+
+| Stage | Read traffic | Write traffic | Worker / event consumption | Scheduler | Legacy observation |
+| --- | --- | --- | --- | --- | --- |
+| Stage 1 | Frontend reads from v2 API | Keep manual control writes on legacy | Keep legacy worker/event as active path | Keep legacy scheduler active | Start baseline monitoring on legacy behavior |
+| Stage 2 | Read stays on v2 | Switch manual control writes to v2 | Keep legacy worker/event as active path | Keep legacy scheduler active | Monitor write-side parity and rollback markers |
+| Stage 3 | Read stays on v2 | Writes stay on v2 | Switch agent dispatch + event consumer to v2 | Keep legacy scheduler active | Legacy remains standby for process-level fallback |
+| Stage 4 | Read stays on v2 | Writes stay on v2 | v2 worker/event stays active | Switch scheduler to v2 | Legacy scheduler enters standby only |
+| Stage 5 | Read/write/worker/scheduler all on v2 | v2 only | v2 only | v2 only | Legacy enters read-only observation window |
+
+## Recommended Execution Order
+
+1. Backup first:
 
 ```bash
-# 1) Create backup (dry-run)
-bash ops/backup/backup_all.sh
-
-# 2) Create backup (execute)
 bash ops/backup/backup_all.sh --execute
+```
 
-# 3) Cutover to v2 (dry-run)
-bash ops/cutover/cutover_to_v2.sh --backup-dir ops/backups/<timestamp>
+2. Execute Stage 1-5 progressively using [`docs/v2-cutover-runbook.md`](../docs/v2-cutover-runbook.md) gates.
+3. Stage cutover commands:
 
-# 4) Rollback to legacy (dry-run)
-bash ops/cutover/rollback_to_legacy.sh --backup-dir ops/backups/<timestamp>
-
-# 5) Prepare rollback-window reinjection artifacts (dry-run)
-bash ops/cutover/reinject_tasks_placeholder.sh \
+```bash
+bash ops/cutover/cutover_to_v2.sh --execute --stage 1 \
   --backup-dir ops/backups/<timestamp> \
-  --from 2026-03-25T00:00:00Z \
-  --to 2026-03-25T04:00:00Z
+  --v2-api-url http://localhost:8000
+```
+
+```bash
+bash ops/cutover/cutover_to_v2.sh --execute --stage 5 \
+  --backup-dir ops/backups/<timestamp> \
+  --v2-api-url http://localhost:8000
+```
+
+4. Keep rollback assets ready:
+
+```bash
+bash ops/cutover/rollback_to_legacy.sh --execute \
+  --backup-dir ops/backups/<timestamp> \
+  --legacy-api-url http://127.0.0.1:7891
+```
+
+## Stage Verification and Rollback Triggers
+
+Recommended checks after each stage:
+
+- `curl -fsS http://127.0.0.1:8000/health`
+- `python3 scripts/diff_legacy_vs_v2.py live-status --legacy-base-url http://127.0.0.1:7891 --v2-base-url http://127.0.0.1:8000`
+- `python3 scripts/diff_legacy_vs_v2.py queue-metrics --legacy-base-url http://127.0.0.1:7891 --v2-base-url http://127.0.0.1:8000`
+
+Rollback trigger points:
+
+- Stage 1: read-side parity mismatch cannot be whitelisted.
+- Stage 2: manual write action result diverges between legacy and v2.
+- Stage 3: dispatch/event backlog grows continuously or worker heartbeat is unstable.
+- Stage 4: scheduler SLA misses, retry/escalation bursts exceed expected bounds.
+- Stage 5: observation window finds data drift that cannot be reconciled by delta reinjection.
+
+Rollback command (dry-run first):
+
+```bash
+bash ops/cutover/rollback_to_legacy.sh \
+  --backup-dir ops/backups/<timestamp>
 ```
