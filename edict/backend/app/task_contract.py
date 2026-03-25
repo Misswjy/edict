@@ -109,6 +109,53 @@ def make_actor_context(actor_id: str | None, source: str = "unknown", request_id
     )
 
 
+def _copy_jsonlike(value: Any) -> Any:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _coerce_iso_text(value: Any) -> str:
+    if isinstance(value, datetime):
+        dt = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    text = str(value or "").strip()
+    return text
+
+
+def _apply_task_aliases(task: dict[str, Any]) -> None:
+    alias_groups = {
+        "flow_log": ("flow_log", "flowLog"),
+        "progress_log": ("progress_log", "progressLog"),
+        "consultLog": ("consultLog", "consult_log"),
+        "_scheduler": ("_scheduler", "scheduler"),
+        "_prev_state": ("_prev_state", "prev_state"),
+        "_stateVersion": ("_stateVersion", "state_version"),
+        "templateId": ("templateId", "template_id"),
+        "templateParams": ("templateParams", "template_params"),
+        "targetDept": ("targetDept", "target_dept"),
+        "review_round": ("review_round", "reviewRound"),
+        "createdAt": ("createdAt", "created_at"),
+        "updatedAt": ("updatedAt", "updated_at"),
+    }
+    for canonical, aliases in alias_groups.items():
+        if task.get(canonical) is not None:
+            continue
+        for alias in aliases:
+            if alias == canonical:
+                continue
+            value = task.get(alias)
+            if value is None:
+                continue
+            if canonical in {"createdAt", "updatedAt"}:
+                task[canonical] = _coerce_iso_text(value)
+            else:
+                task[canonical] = _copy_jsonlike(value)
+            break
+
+
 def task_defaults(now: str | None = None) -> dict[str, Any]:
     ts = now or utc_now_iso()
     return {
@@ -140,10 +187,11 @@ def task_defaults(now: str | None = None) -> dict[str, Any]:
 
 
 def ensure_task_shape(task: dict[str, Any], now: str | None = None) -> dict[str, Any]:
+    _apply_task_aliases(task)
     defaults = task_defaults(now)
     for key, value in defaults.items():
         if key not in task or task.get(key) is None:
-            task[key] = list(value) if isinstance(value, list) else dict(value) if isinstance(value, dict) else value
+            task[key] = _copy_jsonlike(value)
     task["state"] = canonicalize_state(task.get("state")) or TaskState.Pending.value
     task["flow_log"] = list(task.get("flow_log") or [])
     task["progress_log"] = list(task.get("progress_log") or [])
@@ -399,6 +447,7 @@ def build_audit_entry(*, task_id: str, action: str, actor: ActorContext, allowed
         "allowed": allowed,
         "deny_reason": deny_reason,
         "policy_version": POLICY_VERSION,
+        "payload": normalized_payload,
         "payload_hash": hashlib.sha256(payload_json.encode("utf-8")).hexdigest()[:16],
         "payload_summary": payload_json[:400],
     }

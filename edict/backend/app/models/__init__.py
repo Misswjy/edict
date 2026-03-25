@@ -4,6 +4,7 @@ from .task import Task
 from .event import Event
 from .thought import Thought
 from .todo import Todo
+from .task_audit import TaskAudit
 from ..task_contract import TaskState
 
-__all__ = ["Task", "TaskState", "Event", "Thought", "Todo"]
+__all__ = ["Task", "TaskState", "Event", "Thought", "Todo", "TaskAudit"]

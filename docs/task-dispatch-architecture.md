@@ -4,6 +4,25 @@
 
 > 当前角色、状态、权限矩阵与 OpenClaw demo agent 列表的单一真相源为 [config/institution_schema.json](/Users/xingzhan/Documents/edict/config/institution_schema.json)，对应生成片段见 [docs/generated/institution-schema.md](/Users/xingzhan/Documents/edict/docs/generated/institution-schema.md)。
 
+## V2 迁移基线
+
+当前 `v2` 重构阶段，任务契约按下面规则冻结，避免 legacy JSON、ORM 和前端快照继续漂移：
+
+| 范畴 | 冻结规则 |
+|---|---|
+| 制度真相源 | `config/institution_schema.json` 是状态机、权限矩阵、中央队列 SLA 的唯一真相源 |
+| 对外任务快照 | `edict/backend/app/models/task.py` 的 `Task.to_dict()` 是唯一对外基准 |
+| 数据库存储 | Postgres `tasks` 使用 snake_case：`consult_log`、`scheduler`、`prev_state`、`state_version`、`template_id`、`target_dept` |
+| API / 前端字段 | API 对外保持兼容字段：`consultLog`、`_scheduler`、`_prev_state`、`_stateVersion`、`templateId`、`templateParams`、`targetDept`、`createdAt`、`updatedAt` |
+| todos 真相源 | 迁移期以 `tasks.todos` 作为唯一权威快照；独立 `todos` 表只做未来事件投影与查询优化，不参与当前写入真相源 |
+| 审计真相源 | 任务动作审计落 PostgreSQL `task_audits`，同时保留应用日志镜像便于排障 |
+
+这意味着：
+
+- legacy JSON 导入、ORM 读写、FastAPI 响应都必须遵守同一组字段语义。
+- 若输入载荷使用 `consult_log` / `scheduler` / `template_id` 等存储别名，服务层必须在入库前统一折叠为对外快照语义。
+- 在 `todos` 独立投影真正上线前，禁止再引入“同时写 `tasks.todos` 和 `todos` 表但不对账”的临时实现。
+
 **文档概览图**
 
 制度单一真相源：

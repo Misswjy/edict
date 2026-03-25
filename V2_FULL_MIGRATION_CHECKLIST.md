@@ -1,0 +1,853 @@
+# V2 全量迁移改造清单
+
+> 目标：将当前三省六部系统从 legacy `dashboard/server.py + data/*.json` 架构，完整迁移到 v2 `FastAPI + Redis + Postgres` 事件驱动架构，并最终彻底下线 legacy 运行时。
+
+## 1. 文档用途
+
+本清单用于指导一次完整的架构迁移，不是概念性 roadmap，而是面向落地执行的改造总表。它覆盖：
+
+- 数据模型统一
+- API 全量替换
+- 任务流转一致性
+- JSON 到 PostgreSQL 数据迁移
+- 前端无缝切换
+- 权限与审计一致性
+- Redis 事件总线替代直接调用
+- 调度系统替换 legacy 定时轮询
+- 监控告警补齐
+- 切流与回滚
+
+## 2. 迁移目标与完成定义
+
+### 2.1 最终目标
+
+迁移完成后，系统应满足以下条件：
+
+- 所有任务、状态、流转、调度、审计数据均以 Postgres 为唯一持久化真相源
+- 所有实时协作、派发、心跳、调度信号均以 Redis Streams / PubSub 为唯一运行时事件总线
+- 所有前端读写接口均由 FastAPI 提供
+- 所有 Agent 与后台任务不再直接读写 `data/tasks_source.json`
+- `dashboard/server.py`、`scripts/run_loop.sh`、`scripts/kanban_update.py` 不再参与生产主链路
+- legacy 兼容接口、JSON 轮询逻辑、兼容脚本全部下线或只保留离线归档用途
+
+### 2.2 Done 定义
+
+以下条件全部成立，方可视为迁移完成：
+
+1. 前端默认只连接 v2 API，不再依赖 legacy base URL。
+2. 新建任务、状态推进、审批、叫停、恢复、咨询、调度、派发、归档在 v2 上行为与 legacy 一致。
+3. 历史 JSON 任务可以完整迁移到 Postgres，且关键字段对账一致。
+4. Worker 崩溃、重复派发、事件积压、任务停滞等场景在 v2 上可观测、可恢复。
+5. README 与启动方式默认指向 v2，不再以 legacy 为主路径。
+6. 可以完成一次演练：切到 v2，验证通过，再回滚到 legacy，并保证数据可恢复。
+
+## 3. 当前现状与关键差距
+
+### 3.1 现状判断
+
+当前仓库是双轨状态：
+
+- legacy 主链路：`dashboard/`、`scripts/`、`data/`
+- v2 主链路：`edict/backend/app/`、`edict/frontend/src/`、`edict/migration/`
+
+### 3.2 已存在的 v2 基础
+
+- FastAPI 主入口：`edict/backend/app/main.py`
+- 任务服务：`edict/backend/app/services/task_service.py`
+- 事件总线：`edict/backend/app/services/event_bus.py`
+- Orchestrator / Dispatcher Worker：
+  - `edict/backend/app/workers/orchestrator_worker.py`
+  - `edict/backend/app/workers/dispatch_worker.py`
+- React 前端：
+  - `edict/frontend/src/App.tsx`
+  - `edict/frontend/src/api.ts`
+- Alembic 初始迁移：
+  - `edict/migration/versions/001_initial.py`
+
+### 3.3 当前硬缺口
+
+- 前端仍依赖多组 legacy-only 端点，特别是：
+  - `/api/agent-config`
+  - `/api/model-change-log`
+  - `/api/officials-stats`
+  - `/api/morning-*`
+  - `/api/set-model`
+  - `/api/set-dispatch-channel`
+  - `/api/skill-content/*`
+  - `/api/add-skill`
+  - `/api/remote-skills-*`
+  - `/api/court-discuss/*`
+- v2 中仍保留 legacy 兼容路由：
+  - `edict/backend/app/api/legacy.py`
+- 现有 JSON 迁移脚本与当前 ORM 已失配：
+  - `edict/migration/migrate_json_to_pg.py`
+- v2 审计日志仍主要以应用日志形式输出，尚未形成可查询审计表
+- v2 部分 API 仍直接读取 `data/*.json`
+- 调度扫描仍依赖 legacy 风格的外部触发，而不是独立 worker / scheduler
+
+## 4. 迁移原则
+
+### 4.1 单一真相源
+
+- 制度与契约真相源：`config/institution_schema.json`
+- 任务快照真相源：Postgres `tasks`
+- 事件审计真相源：Postgres `events`
+- 运行时事件总线：Redis Streams / PubSub
+
+### 4.2 兼容期策略
+
+- 允许短期双跑与影子对账
+- 不允许长期双写双读成为常态
+- 兼容层只作为切流过渡，不作为最终架构组成
+
+### 4.3 迁移顺序原则
+
+必须按下面顺序推进：
+
+1. 先冻结契约和字段语义
+2. 再统一数据模型
+3. 再补全 API 和 Worker
+4. 再做数据迁移
+5. 再做前端切换
+6. 最后下线 legacy
+
+## 5. 优先级总览
+
+| 优先级 | 目标 | 结果 |
+|---|---|---|
+| P0 | 冻结契约、补齐设计、建立迁移闸门 | 可以开始编码改造，但还未切流 |
+| P1 | 打通 v2 主链路 | v2 可以承接所有核心业务动作 |
+| P2 | 数据迁移、影子双跑、分阶段切流 | v2 成为默认运行链路 |
+| P3 | 下线 legacy、清理文档和脚本 | 仓库默认只剩 v2 |
+
+## 6. 详细改造清单
+
+---
+
+## P0. 迁移基线、范围冻结、回滚闸门
+
+### P0-1. 冻结制度契约与字段语义
+
+- [ ] 明确 `config/institution_schema.json` 为状态机、权限矩阵、快车道、中央队列 SLA 的唯一真相源
+- [ ] 明确 v2 对外任务快照格式以 `Task.to_dict()` 为基准
+- [ ] 明确 legacy 字段与 v2 字段的一一映射关系
+- [ ] 明确 `todos` 的最终真相源策略
+- [ ] 明确 audit 的最终存储模型
+
+涉及文件：
+
+- `config/institution_schema.json`
+- `edict/backend/app/task_contract.py`
+- `edict/backend/app/models/task.py`
+- `edict/frontend/src/api.ts`
+- `docs/task-dispatch-architecture.md`
+
+验收标准：
+
+- 形成字段映射表并冻结，不再临时改字段名
+- 所有相关方对 `state/org/targetDept/lane/review_round/todos/consultLog/_scheduler/_stateVersion` 语义达成一致
+
+风险点：
+
+- 在迁移中途修改状态名或字段语义，会导致前后端、迁移脚本、事件回放同时失效
+
+### P0-2. 建立完整 API inventory 与 parity 表
+
+- [ ] 盘点前端实际调用的全部 `/api/*`
+- [ ] 标记每个端点是“已在 v2”“待迁移”“废弃”“可合并”
+- [ ] 输出 legacy -> v2 路由映射表
+
+涉及文件：
+
+- `dashboard/server.py`
+- `edict/frontend/src/api.ts`
+- `edict/backend/app/api/*.py`
+
+验收标准：
+
+- 前端调用的每个端点都有明确去向
+- 不存在“切流时才发现缺端点”的情况
+
+风险点：
+
+- 长尾管理类接口漏迁，会导致 UI 进入“主流程可用、边角全坏”的状态
+
+### P0-3. 设计切流与回滚闸门
+
+- [ ] 定义切流前必须完成的备份项
+- [ ] 定义切流顺序
+- [ ] 定义回滚触发条件
+- [ ] 定义回滚窗口内的数据回灌方案
+
+涉及文件：
+
+- `edict/docker-compose.yml`
+- `docker-compose.yml`
+- `README.md`
+- `docs/getting-started.md`
+- 新增 `ops/backup/`、`ops/restore/`、`ops/cutover/` 脚本
+
+验收标准：
+
+- 可以独立执行一次“备份 -> 切流 -> 回滚”演练
+
+风险点：
+
+- 没有回滚闸门时，真正切流等同于一次性赌博
+
+---
+
+## P1. 核心链路迁移
+
+### 7. 数据模型统一
+
+#### P1-1. 统一任务快照模型
+
+- [ ] 让 `edict/backend/app/models/task.py` 与 `edict/backend/app/task_contract.py` 完全对齐
+- [ ] 统一 snake_case 存储与 camelCase 对外输出映射
+- [ ] 明确 `consult_log <-> consultLog`、`scheduler <-> _scheduler`、`prev_state <-> _prev_state` 映射
+- [ ] 明确 `created_at/updated_at` 与 legacy `createdAt/updatedAt` 的转换规则
+
+涉及文件：
+
+- `edict/backend/app/models/task.py`
+- `edict/backend/app/task_contract.py`
+- `edict/migration/versions/001_initial.py`
+
+验收标准：
+
+- 任意任务对象在 `ensure_task_shape -> ORM -> to_dict` 过程里不丢字段
+- 前端 `Task` 类型与后端返回结构对齐
+
+风险点：
+
+- 字段命名兼容若处理不统一，前端会出现静默渲染错误
+
+#### P1-2. 决定 `todos` 最终存储策略
+
+- [ ] 决定短期内以 `tasks.todos` 还是独立 `todos` 表为真相源
+- [ ] 若保留独立 `todos` 表，则实现可靠双写或异步投影
+- [ ] 若先不启用独立 `todos` 表，则文档标明其仅用于未来扩展
+
+涉及文件：
+
+- `edict/backend/app/models/task.py`
+- `edict/backend/app/models/todo.py`
+- `edict/backend/app/services/task_service.py`
+- `edict/backend/app/services/event_bus.py`
+
+验收标准：
+
+- `todos` 更新不会出现一份更新、一份滞后的情况
+
+风险点：
+
+- `tasks.todos` 与 `todos` 表双写但无一致性策略，是典型数据漂移点
+
+#### P1-3. 补齐 durable audit 模型
+
+- [ ] 新增任务审计表或通用 audit 表
+- [ ] 将 `TaskService._audit()` 从纯日志改为“数据库持久化 + 日志输出”
+- [ ] 支持按 `task_id / actor / action / allowed` 查询
+
+涉及文件：
+
+- `edict/backend/app/services/task_service.py`
+- 新增 `edict/backend/app/models/task_audit.py`
+- 新增 Alembic migration
+
+验收标准：
+
+- 所有权限拒绝、状态跃迁、调度操作、手工动作都可审计回放
+
+风险点：
+
+- 如果只保留 stdout 日志，切流后可审计性会低于 legacy 的 `task_audit_log.json`
+
+---
+
+### 8. API 迁移
+
+#### P1-4. 完成任务控制面 parity
+
+- [ ] 保持并稳定以下 v2 兼容接口：
+  - `/api/live-status`
+  - `/api/task-activity/{task_id}`
+  - `/api/scheduler-state/{task_id}`
+  - `/api/queue-metrics`
+  - `/api/create-task`
+  - `/api/task-action`
+  - `/api/review-action`
+  - `/api/advance-state`
+  - `/api/task-consult`
+  - `/api/archive-task`
+  - `/api/task-todos`
+  - `/api/scheduler-scan`
+  - `/api/scheduler-retry`
+  - `/api/scheduler-escalate`
+  - `/api/scheduler-rollback`
+
+涉及文件：
+
+- `edict/backend/app/api/dashboard.py`
+- `edict/backend/app/services/task_service.py`
+
+验收标准：
+
+- 现有前端不改页面逻辑也能使用 v2 控制面
+
+风险点：
+
+- 如果只保留 RESTful `/api/tasks/*` 而不保留 dashboard-compatible 路由，前端切换成本会陡增
+
+#### P1-5. 迁移 legacy-only 读接口
+
+- [ ] 新增或完善 v2 实现：
+  - `/api/agent-config`
+  - `/api/model-change-log`
+  - `/api/officials-stats`
+  - `/api/morning-brief`
+  - `/api/morning-config`
+  - `/api/agents-status`
+  - `/api/skill-content/{agentId}/{skillName}`
+  - `/api/remote-skills-list`
+
+涉及文件：
+
+- `edict/backend/app/api/agents.py`
+- 新增 `edict/backend/app/api/models.py`
+- 新增 `edict/backend/app/api/skills.py`
+- 新增 `edict/backend/app/api/morning.py`
+- 新增 `edict/backend/app/api/officials.py`
+- 新增服务层模块
+
+验收标准：
+
+- 前端所有读取接口均可从 FastAPI 返回，不再依赖 `data/*.json`
+
+风险点：
+
+- 如果这些接口仍旧回读 JSON，则“去 legacy”只是表面替换
+
+#### P1-6. 迁移 legacy-only 写接口
+
+- [ ] 新增或完善 v2 实现：
+  - `/api/set-model`
+  - `/api/set-dispatch-channel`
+  - `/api/agent-wake`
+  - `/api/add-skill`
+  - `/api/add-remote-skill`
+  - `/api/update-remote-skill`
+  - `/api/remove-remote-skill`
+
+涉及文件：
+
+- 新增 `edict/backend/app/api/admin_actions.py`
+- 新增 `edict/backend/app/services/agent_config_service.py`
+- 新增 `edict/backend/app/services/skills_service.py`
+
+验收标准：
+
+- 所有控制动作均通过 FastAPI 执行并被审计
+
+风险点：
+
+- 这些动作多数涉及宿主机文件、OpenClaw 配置与 workspace，需要把副作用模型设计清楚
+
+#### P1-7. 迁移朝堂议政功能
+
+- [ ] 将 `court_discuss` 的会话存储迁入 Postgres 或至少抽象为 v2 service
+- [ ] 完成以下端点迁移：
+  - `/api/court-discuss/start`
+  - `/api/court-discuss/list`
+  - `/api/court-discuss/session/{id}`
+  - `/api/court-discuss/advance`
+  - `/api/court-discuss/conclude`
+  - `/api/court-discuss/destroy`
+  - `/api/court-discuss/fate`
+  - `/api/court-discuss/officials`
+
+涉及文件：
+
+- `dashboard/court_discuss.py`
+- 新增 `edict/backend/app/api/court_discuss.py`
+- 新增 `edict/backend/app/services/court_discuss_service.py`
+
+验收标准：
+
+- 跨重启恢复、议政推进、结论生成、历史会话查询在 v2 中可用
+
+风险点：
+
+- 若朝堂议政仍写 JSON，本次迁移仍存在一条绕过 v2 的业务链路
+
+---
+
+### 9. 任务流转与权限校验一致性
+
+#### P1-8. 用共享契约驱动所有状态跃迁
+
+- [ ] 确保所有状态推进都经过 `task_contract.py`
+- [ ] 删除任何绕过 `validate_transition()` 的隐藏状态改写
+- [ ] 保持快车道、审议驳回、手工推进与 legacy 行为一致
+
+涉及文件：
+
+- `edict/backend/app/task_contract.py`
+- `edict/backend/app/services/task_service.py`
+- `dashboard/legacy_tasks.py`
+- `dashboard/legacy_scheduler.py`
+
+验收标准：
+
+- 对同一组 fixture，legacy 与 v2 的状态结果一致
+
+风险点：
+
+- `Blocked -> 恢复`、`Review -> Doing`、`Assigned -> Next` 是最容易产生行为漂移的节点
+
+#### P1-9. 权限矩阵运行时一致
+
+- [ ] 统一 Agent 权限判断仅通过 `authorize_*` 系列函数
+- [ ] 保留 actor / source / request_id / signature 语义
+- [ ] 明确 dashboard 用户、scheduler、system、agent 的权限边界
+
+涉及文件：
+
+- `edict/backend/app/task_contract.py`
+- `edict/backend/app/api/auth.py`
+- `edict/backend/app/security.py`
+- `tests/test_architecture_contracts.py`
+
+验收标准：
+
+- 审批、咨询、调度、唤醒、手工控制的 allow/deny 结果与 legacy 保持一致
+
+风险点：
+
+- control plane 的 HTTP 鉴权和任务 actor 鉴权不是一回事，不能混为一层
+
+---
+
+### 10. 事件系统迁移
+
+#### P1-10. 所有关键副作用改为事件驱动
+
+- [ ] 将任务创建、状态变更、派发、咨询、todo 更新、完成、升级、回滚全部标准化为事件
+- [ ] 明确 topic 命名与事件负载 schema
+- [ ] 统一 dedupe key 规则
+
+涉及文件：
+
+- `edict/backend/app/services/event_bus.py`
+- `edict/backend/app/services/task_service.py`
+- `edict/backend/app/workers/orchestrator_worker.py`
+- `edict/backend/app/workers/dispatch_worker.py`
+
+验收标准：
+
+- 同一任务同一状态版本下不会重复派发
+- Worker 崩溃后可通过 pending reclaim 恢复
+
+风险点：
+
+- 没有统一 dedupe 规则时，最容易产生重复执行与幂等灾难
+
+#### P1-11. 补齐事件投影
+
+- [ ] 将 `agent.thoughts` 持久化到 `thoughts`
+- [ ] 明确 `agent.todo.update` 是否投影到独立表
+- [ ] 增加任务活动流的统一查询视图
+
+涉及文件：
+
+- `edict/backend/app/services/event_bus.py`
+- `edict/backend/app/models/thought.py`
+- `edict/backend/app/models/todo.py`
+- `edict/backend/app/api/events.py`
+
+验收标准：
+
+- 可以基于事件和投影重建任务活动流
+
+风险点：
+
+- 如果只有 `events` 原始表，没有投影层，查询复杂度和前端负担会升高
+
+---
+
+### 11. 调度系统迁移
+
+#### P1-12. 将调度扫描从外部轮询改为后台 worker
+
+- [ ] 新增独立 `scheduler_worker`
+- [ ] 由 worker 按固定间隔运行停滞扫描，不再依赖 `curl /api/scheduler-scan`
+- [ ] 支持部署级单实例或分布式锁，避免多 scheduler 重复动作
+
+涉及文件：
+
+- `scripts/run_loop.sh`
+- `edict/backend/app/services/task_service.py`
+- 新增 `edict/backend/app/workers/scheduler_worker.py`
+- `edict/docker-compose.yml`
+
+验收标准：
+
+- 停掉 legacy loop 后，v2 仍会自动 retry / escalate / rollback
+
+风险点：
+
+- 若没有调度实例互斥控制，多副本部署时会重复触发恢复动作
+
+#### P1-13. 对齐 legacy 调度策略
+
+- [ ] 对齐 `stallThresholdSec / maxRetry / escalationLevel / autoRollback / snapshot`
+- [ ] 对齐 flow_log 中的调度备注风格
+- [ ] 对齐门下省与尚书省中央队列指标
+
+涉及文件：
+
+- `dashboard/legacy_scheduler.py`
+- `edict/backend/app/services/task_service.py`
+
+验收标准：
+
+- 同一组停滞任务 fixture 下，legacy 与 v2 产生相同调度决策
+
+风险点：
+
+- 如果 stallThreshold 计算改了但没同步文档和监控，行为会看起来“随机”
+
+---
+
+### 12. 前端适配
+
+#### P1-14. 将前端切到单一 v2 API base
+
+- [ ] 去掉前端对 legacy 默认同源 API 的依赖
+- [ ] 将所有读取与写入统一收敛到 FastAPI
+- [ ] 保留 WebSocket 优先，HTTP fallback 次之
+
+涉及文件：
+
+- `edict/frontend/src/api.ts`
+- `edict/frontend/src/store.ts`
+- `edict/frontend/src/components/*`
+- `edict/docker-compose.yml`
+
+验收标准：
+
+- 前端只需要一个 `VITE_API_URL`
+- 不再需要通过 `dashboard/server.py` 反向代理到 control plane
+
+风险点：
+
+- 响应 shape 微小差异就可能导致前端静默异常，需要完整 UI 回归
+
+#### P1-15. 前端类型与 UI 状态统一
+
+- [ ] 对齐 `Task`、`FlowEntry`、`ProgressEntry`、`TodoItem` 等类型
+- [ ] 对齐心跳状态、监控面板、官方统计、朝报、技能配置等面板的数据结构
+- [ ] 确保 `live-status` 返回结构稳定
+
+涉及文件：
+
+- `edict/frontend/src/api.ts`
+- `edict/frontend/src/generated/institutionSchema.ts`
+- `edict/frontend/src/components/*.tsx`
+
+验收标准：
+
+- 前端 build 通过，且各面板能在 v2 数据下正常渲染
+
+风险点：
+
+- `live-status` 是多个面板共享入口，一旦结构漂移会产生连锁故障
+
+---
+
+### 13. 监控告警
+
+#### P1-16. 建立深度健康检查与运行指标
+
+- [ ] 补齐 Postgres、Redis、Worker、consumer lag、pending event 健康检查
+- [ ] 输出任务量、状态分布、中央队列积压、调度动作次数
+- [ ] 提供 Prometheus 或等价指标暴露
+
+涉及文件：
+
+- `edict/backend/app/api/admin.py`
+- `edict/backend/app/api/events.py`
+- 新增 `edict/backend/app/api/metrics.py`
+
+验收标准：
+
+- 能监控数据库、Redis、Worker、事件流、中央队列、调度动作
+
+风险点：
+
+- 仅有 `/health` 无法支撑迁移期间的问题定位
+
+#### P1-17. 建立告警规则
+
+- [ ] 配置以下最低告警：
+  - Redis pending event 积压
+  - Dispatcher / Orchestrator / Scheduler worker 心跳丢失
+  - 中央队列超 SLA 堆积
+  - 重复回滚/重复升级异常增长
+  - 前端 WebSocket 连续断连
+
+涉及文件：
+
+- 新增 `ops/alerts/`
+- 部署平台配置
+
+验收标准：
+
+- 演练中能主动发现停滞、积压、worker 崩溃等问题
+
+风险点：
+
+- 没有告警时，v2 的问题只会在用户反馈后暴露
+
+---
+
+## P2. 数据迁移、影子双跑、分阶段切流
+
+### 14. 数据迁移
+
+#### P2-1. 重写 JSON -> PG 迁移器
+
+- [ ] 修复 `edict/migration/migrate_json_to_pg.py` 与当前 ORM 的失配
+- [ ] 支持 dry-run、正式导入、重复导入跳过、详细对账报告
+- [ ] 迁移 `flow_log / progress_log / consultLog / _scheduler / archived / review_round`
+- [ ] 为 legacy 记录补齐最小可追溯 metadata
+
+涉及文件：
+
+- `edict/migration/migrate_json_to_pg.py`
+- `edict/backend/app/models/task.py`
+- `edict/backend/app/models/event.py`
+
+验收标准：
+
+- 干跑时可输出任务总量、状态分布、错误数
+- 正式导入后数据行数和分布与 legacy 一致
+
+风险点：
+
+- 只迁当前快照、不迁历史上下文，会让审计与回放能力倒退
+
+#### P2-2. 迁移非任务附属数据
+
+- [ ] 迁移模型配置
+- [ ] 迁移技能索引与远程技能元数据
+- [ ] 迁移朝报配置
+- [ ] 迁移朝堂议政会话
+- [ ] 明确官员统计是运行时聚合还是持久化投影
+
+涉及文件：
+
+- `data/agent_config.json`
+- `data/model_change_log.json`
+- `data/morning_brief*.json`
+- `data/court_discuss_sessions.json`
+- 相应 v2 service / model
+
+验收标准：
+
+- v2 上所有 UI 面板都具备完整初始化数据来源
+
+风险点：
+
+- 如果只迁任务，不迁这些附属数据，前端切流依旧不完整
+
+### 15. 影子双跑与对账
+
+#### P2-3. 建立 parity diff 工具
+
+- [ ] 对比 legacy 与 v2 的 `live-status`
+- [ ] 对比任务动作结果
+- [ ] 对比队列指标与调度结果
+- [ ] 输出字段级 diff 报告
+
+涉及文件：
+
+- 新增 `scripts/diff_legacy_vs_v2.py`
+- 新增 `tests/test_migration_parity.py`
+
+验收标准：
+
+- 连续观察窗口内核心字段 diff 为 0 或在预期白名单内
+
+风险点：
+
+- 没有对账工具时，双跑只能靠人工观察，容易遗漏深层偏差
+
+#### P2-4. 分阶段切流
+
+- [ ] 阶段 1：前端读流量切到 v2
+- [ ] 阶段 2：人工控制写流量切到 v2
+- [ ] 阶段 3：Agent 派发与事件消费切到 v2
+- [ ] 阶段 4：调度切到 v2
+- [ ] 阶段 5：legacy 只读观察窗口
+
+涉及文件：
+
+- 前端环境配置
+- 部署配置
+- OpenClaw / worker 启动配置
+
+验收标准：
+
+- 每次切流后都能完成一轮业务回归
+
+风险点：
+
+- 一次性全切会让问题定位难度指数上升
+
+---
+
+## P3. 下线 legacy 与收尾
+
+### 16. 下线 legacy 运行时
+
+#### P3-1. legacy 先只读，再删除
+
+- [ ] 将 legacy server 标记为只读或明确废弃
+- [ ] 停止所有运行时对 `tasks_source.json` 的写入
+- [ ] 删除或下线 `edict/backend/app/api/legacy.py`
+- [ ] 停止 `scripts/run_loop.sh` 和 JSON 轮询刷新
+
+涉及文件：
+
+- `dashboard/server.py`
+- `dashboard/legacy_tasks.py`
+- `dashboard/legacy_scheduler.py`
+- `dashboard/legacy_agents.py`
+- `dashboard/legacy_skills.py`
+- `dashboard/legacy_morning.py`
+- `edict/backend/app/api/legacy.py`
+- `scripts/run_loop.sh`
+- `scripts/kanban_update.py`
+- `scripts/refresh_live_data.py`
+- `scripts/sync_officials_stats.py`
+- `scripts/sync_agent_config.py`
+
+验收标准：
+
+- 核心代码路径中不再依赖 legacy runtime
+
+风险点：
+
+- 若删除过早，在回滚窗口内会失去安全垫
+
+#### P3-2. 默认启动路径改为 v2
+
+- [ ] 默认 compose / dev 命令全部指向 `edict/docker-compose.yml`
+- [ ] 安装脚本与文档默认说明改为 v2
+- [ ] 如果保留 legacy demo，需明确标注“仅历史演示，不再作为主链路”
+
+涉及文件：
+
+- `README.md`
+- `README_EN.md`
+- `docs/getting-started.md`
+- `install.sh`
+- `install.ps1`
+
+验收标准：
+
+- 新同学只按文档执行，也不会再启动 legacy 作为默认链路
+
+风险点：
+
+- 文档不改，legacy 会被继续误用
+
+## 17. 验收矩阵
+
+### 17.1 必做测试
+
+- [ ] `pytest tests/test_task_contract.py -q`
+- [ ] `pytest tests/test_architecture_contracts.py -q`
+- [ ] `pytest tests/test_backend_dispatch.py -q`
+- [ ] 前端构建：`npm --prefix edict/frontend run build`
+- [ ] v2 集成测试：补充 FastAPI + Postgres + Redis 集成用例
+- [ ] 数据迁移 dry-run
+- [ ] 数据迁移正式导入后对账
+- [ ] 浏览器回归：任务看板、任务详情、模型配置、技能配置、朝报、朝堂议政、官员面板
+
+### 17.2 业务回归路径
+
+- [ ] 创建旨意 -> 司礼监分办 -> 中书起草 -> 门下审批 -> 尚书派发 -> 六部执行 -> 审查 -> 完成
+- [ ] 门下驳回 -> 中书返工 -> 二次审批
+- [ ] 快车道任务自动进入执行队列
+- [ ] stop / resume / cancel
+- [ ] review approve / reject
+- [ ] consult 不改主状态
+- [ ] scheduler retry / escalate / rollback
+- [ ] archive / archiveAllDone
+
+### 17.3 非功能验收
+
+- [ ] Worker 崩溃恢复
+- [ ] 重复 dispatch 幂等
+- [ ] Redis pending reclaim 正常
+- [ ] 中央队列指标正确
+- [ ] 深度健康检查正常
+- [ ] 日志与审计可检索
+
+## 18. 回滚方案
+
+### 18.1 切流前准备
+
+- [ ] 备份 `data/` 目录
+- [ ] 导出 Postgres 逻辑备份
+- [ ] 备份 Redis AOF / RDB
+- [ ] 冻结一个可回退的 legacy tag 或镜像
+
+### 18.2 切流时回滚触发条件
+
+满足任一条件即回滚：
+
+- 核心任务动作出现高比例 5xx
+- 任务状态和 legacy 对账持续出现关键字段不一致
+- Redis pending event 积压超阈值
+- 调度器失效或持续错误升级/回滚
+- 前端关键面板不可用
+
+### 18.3 回滚步骤
+
+- [ ] 先冻结 v2 写流量
+- [ ] 恢复前端到 legacy API
+- [ ] 恢复 legacy scheduler / loop
+- [ ] 将最近一次可用快照恢复到 `data/tasks_source.json`
+- [ ] 根据需要回灌 v2 期间新增任务
+
+### 18.4 回滚窗口结束条件
+
+- [ ] v2 稳定运行一个完整观察窗口
+- [ ] 不再需要 legacy 接管
+- [ ] 完成一次恢复演练并通过
+
+## 19. 建议执行顺序
+
+建议按以下 critical path 推进：
+
+1. P0-1 冻结契约
+2. P0-2 API inventory
+3. P0-3 回滚闸门
+4. P1-1 / P1-2 / P1-3 数据模型与审计
+5. P1-4 ~ P1-7 API 全量迁移
+6. P1-8 / P1-9 状态机与权限一致性
+7. P1-10 / P1-11 事件投影
+8. P1-12 / P1-13 调度迁移
+9. P1-14 / P1-15 前端切换
+10. P1-16 / P1-17 监控告警
+11. P2-1 / P2-2 数据迁移
+12. P2-3 / P2-4 影子双跑与切流
+13. P3-1 / P3-2 下线 legacy 和文档收尾
+
+## 20. 一句话执行原则
+
+先冻结契约和回滚闸门，再把 v2 补到能完整承接所有读写与调度，最后才下线 legacy；任何试图跳过对账、跳过影子双跑、跳过回滚演练的做法，都不应进入正式切流。

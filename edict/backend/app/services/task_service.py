@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -130,7 +131,7 @@ class TaskService:
             meta=self._event_meta(actor, task),
             dedupe_key=f"task-created:{task.id}:v{task.state_version}",
         )
-        self._audit("task.create", actor, True, task_id=task.id, to_state=task.state.value, payload={"title": title})
+        await self._audit("task.create", actor, True, task_id=task.id, to_state=task.state.value, payload={"title": title})
         return task
 
     async def transition_state(
@@ -141,13 +142,13 @@ class TaskService:
         reason: str = "",
     ) -> Task:
         actor = actor or make_actor_context("system", source="edict-backend")
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         current_state = canonicalize_state(task_dict.get("state"))
 
         allowed, deny_reason = authorize_transition(actor, task_dict, new_state.value)
         if not allowed:
-            self._audit(
+            await self._audit(
                 "task.transition",
                 actor,
                 False,
@@ -161,7 +162,7 @@ class TaskService:
 
         valid, validation_error = validate_transition(task_dict, new_state.value)
         if not valid:
-            self._audit(
+            await self._audit(
                 "task.transition",
                 actor,
                 False,
@@ -195,7 +196,7 @@ class TaskService:
 
         await self._publish_state_event(task, actor, current_state, reason)
         await self._maybe_fast_track_assigned(task)
-        self._audit("task.transition", actor, True, task_id=task.id, from_state=current_state, to_state=new_state.value, payload={"reason": reason})
+        await self._audit("task.transition", actor, True, task_id=task.id, from_state=current_state, to_state=new_state.value, payload={"reason": reason})
         return task
 
     async def request_dispatch(
@@ -210,7 +211,7 @@ class TaskService:
         task_dict = task.to_dict()
         allowed, deny_reason = authorize_dispatch(actor, task_dict, target_agent)
         if not allowed:
-            self._audit(
+            await self._audit(
                 "task.dispatch",
                 actor,
                 False,
@@ -230,7 +231,7 @@ class TaskService:
             message=message,
             manual=True,
         )
-        self._audit(
+        await self._audit(
             "task.dispatch",
             actor,
             True,
@@ -249,11 +250,11 @@ class TaskService:
         actor: ActorContext | None = None,
     ) -> dict[str, Any]:
         actor = actor or make_actor_context("system", source="edict-backend")
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         allowed, deny_reason = authorize_consultation(actor, task_dict, target_agent)
         if not allowed:
-            self._audit(
+            await self._audit(
                 "task.consult",
                 actor,
                 False,
@@ -305,7 +306,7 @@ class TaskService:
             meta=self._event_meta(actor, task, {"dispatch_key": consult_key, "consult": True}),
             dedupe_key=consult_key,
         )
-        self._audit(
+        await self._audit(
             "task.consult",
             actor,
             True,
@@ -319,11 +320,11 @@ class TaskService:
 
     async def add_progress(self, task_id: str, actor: ActorContext | None, content: str) -> Task:
         actor = actor or make_actor_context("system", source="edict-backend")
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         allowed, deny_reason = authorize_progress(actor, task_dict)
         if not allowed:
-            self._audit("task.progress", actor, False, task_id=task_id, from_state=task.state.value, deny_reason=deny_reason, payload={"content": content})
+            await self._audit("task.progress", actor, False, task_id=task_id, from_state=task.state.value, deny_reason=deny_reason, payload={"content": content})
             raise PermissionError(deny_reason)
 
         progress_log = list(task.progress_log or [])
@@ -346,18 +347,18 @@ class TaskService:
         scheduler["escalationLevel"] = 0
         task.scheduler = scheduler
         await self.db.commit()
-        self._audit("task.progress", actor, True, task_id=task_id, from_state=task.state.value, payload={"content": content})
+        await self._audit("task.progress", actor, True, task_id=task_id, from_state=task.state.value, payload={"content": content})
         return task
 
     async def update_todos(self, task_id: str, actor: ActorContext | None, todos: list[dict]) -> Task:
         actor = actor or make_actor_context("system", source="edict-backend")
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         allowed, deny_reason = authorize_todos(actor, task_dict)
         if not allowed:
-            self._audit("task.todos", actor, False, task_id=task_id, from_state=task.state.value, deny_reason=deny_reason, payload={"todo_count": len(todos)})
+            await self._audit("task.todos", actor, False, task_id=task_id, from_state=task.state.value, deny_reason=deny_reason, payload={"todo_count": len(todos)})
             raise PermissionError(deny_reason)
-        task.todos = todos
+        task.todos = list(todos or [])
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
         await self.bus.publish(
@@ -365,34 +366,34 @@ class TaskService:
             trace_id=task.id,
             event_type="task.todos.updated",
             producer=actor.actor_id,
-            payload={"task_id": task.id, "items": todos},
-            meta=self._event_meta(actor, task),
+            payload={"task_id": task.id, "items": task.todos, "source_of_truth": "tasks.todos"},
+            meta=self._event_meta(actor, task, {"source_of_truth": "tasks.todos"}),
             dedupe_key=f"task-todos:{task.id}:{actor.request_id}",
         )
-        self._audit("task.todos", actor, True, task_id=task_id, from_state=task.state.value, payload={"todo_count": len(todos)})
+        await self._audit("task.todos", actor, True, task_id=task_id, from_state=task.state.value, payload={"todo_count": len(todos), "source_of_truth": "tasks.todos"})
         return task
 
     async def update_scheduler(self, task_id: str, actor: ActorContext | None, scheduler: dict) -> Task:
         actor = actor or make_actor_context("system", source="edict-backend")
         allowed, deny_reason = authorize_scheduler(actor, "update_scheduler")
         if not allowed:
-            self._audit("task.scheduler", actor, False, task_id=task_id, deny_reason=deny_reason, payload={"scheduler": scheduler})
+            await self._audit("task.scheduler", actor, False, task_id=task_id, deny_reason=deny_reason, payload={"scheduler": scheduler})
             raise PermissionError(deny_reason)
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task.scheduler = scheduler
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
-        self._audit("task.scheduler", actor, True, task_id=task_id, from_state=task.state.value, payload={"scheduler": scheduler})
+        await self._audit("task.scheduler", actor, True, task_id=task_id, from_state=task.state.value, payload={"scheduler": scheduler})
         return task
 
     async def task_action(self, task_id: str, action: str, reason: str = "", actor: ActorContext | None = None) -> dict[str, Any]:
         actor = actor or make_actor_context("emperor", source="dashboard")
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         allowed, deny_reason = authorize_task_action(actor, task_dict, action)
         old_state = canonicalize_state(task_dict.get("state"))
         if not allowed:
-            self._audit(f"task.{action}", actor, False, task_id=task_id, from_state=old_state, deny_reason=deny_reason, payload={"reason": reason})
+            await self._audit(f"task.{action}", actor, False, task_id=task_id, from_state=old_state, deny_reason=deny_reason, payload={"reason": reason})
             raise PermissionError(deny_reason)
 
         self._ensure_scheduler(task_dict)
@@ -447,17 +448,17 @@ class TaskService:
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
         await self._publish_state_event(task, actor, old_state, reason)
-        self._audit(f"task.{action}", actor, True, task_id=task.id, from_state=old_state, to_state=task.state.value, payload={"reason": reason})
+        await self._audit(f"task.{action}", actor, True, task_id=task.id, from_state=old_state, to_state=task.state.value, payload={"reason": reason})
         return {"ok": True, "message": f"{task.id} {'已叫停' if action == 'stop' else '已取消' if action == 'cancel' else '已恢复'}"}
 
     async def review_task(self, task_id: str, action: str, comment: str = "", actor: ActorContext | None = None) -> dict[str, Any]:
         actor = actor or make_actor_context("emperor", source="dashboard")
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         current_state = canonicalize_state(task_dict.get("state"))
         allowed, deny_reason = authorize_review(actor, task_dict, action)
         if not allowed:
-            self._audit(f"review.{action}", actor, False, task_id=task.id, from_state=current_state, deny_reason=deny_reason, payload={"comment": comment})
+            await self._audit(f"review.{action}", actor, False, task_id=task.id, from_state=current_state, deny_reason=deny_reason, payload={"comment": comment})
             raise PermissionError(deny_reason)
 
         self._ensure_scheduler(task_dict)
@@ -490,12 +491,12 @@ class TaskService:
         await self.db.commit()
         await self._publish_state_event(task, actor, current_state, comment)
         await self._maybe_fast_track_assigned(task)
-        self._audit(f"review.{action}", actor, True, task_id=task.id, from_state=current_state, to_state=task.state.value, payload={"comment": comment})
+        await self._audit(f"review.{action}", actor, True, task_id=task.id, from_state=current_state, to_state=task.state.value, payload={"comment": comment})
         return {"ok": True, "message": f"{task.id} {'已准奏' if action == 'approve' else '已驳回'}"}
 
     async def advance_task(self, task_id: str, comment: str = "", actor: ActorContext | None = None) -> dict[str, Any]:
         actor = actor or make_actor_context("emperor", source="dashboard")
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         current_state = canonicalize_state(task_dict.get("state"))
         ok, transition = next_manual_transition(task_dict)
@@ -528,17 +529,17 @@ class TaskService:
         await self.db.commit()
         await self._publish_state_event(task, actor, current_state, remark)
         await self._maybe_fast_track_assigned(task)
-        self._audit("task.advance", actor, True, task_id=task.id, from_state=current_state, to_state=next_state, payload={"comment": comment})
+        await self._audit("task.advance", actor, True, task_id=task.id, from_state=current_state, to_state=next_state, payload={"comment": comment})
         return {"ok": True, "message": f"{task.id} 已推进到 {next_state}"}
 
     async def archive_task(self, task_id: str, archived: bool, actor: ActorContext | None = None) -> dict[str, Any]:
         actor = actor or make_actor_context("emperor", source="dashboard")
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task.archived = bool(archived)
         task.archived_at = datetime.now(timezone.utc) if archived else None
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
-        self._audit("task.archive", actor, True, task_id=task.id, from_state=task.state.value, payload={"archived": archived})
+        await self._audit("task.archive", actor, True, task_id=task.id, from_state=task.state.value, payload={"archived": archived})
         return {"ok": True, "message": f"{task.id} {'已归档' if archived else '已取消归档'}"}
 
     async def archive_all_done(self, actor: ActorContext | None = None) -> dict[str, Any]:
@@ -553,7 +554,7 @@ class TaskService:
                 task.updated_at = now
                 count += 1
         await self.db.commit()
-        self._audit("task.archive_all_done", actor, True, task_id="", payload={"count": count})
+        await self._audit("task.archive_all_done", actor, True, task_id="", payload={"count": count})
         return {"ok": True, "message": f"{count} 道旨意已归档", "count": count}
 
     async def get_task_activity(self, task_id: str) -> dict[str, Any]:
@@ -666,7 +667,7 @@ class TaskService:
         allowed, deny_reason = authorize_scheduler(actor, "retry")
         if not allowed:
             raise PermissionError(deny_reason)
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         state = canonicalize_state(task_dict.get("state"))
         if state in TERMINAL_STATES or state == TaskState.Blocked.value:
@@ -682,7 +683,7 @@ class TaskService:
         agent = resolve_dispatch_agent(task_dict, state)
         if agent:
             await self._publish_dispatch_request(task, actor, agent, message=f"司礼监调度重试：{reason or '请继续推进任务'}", manual=True)
-        self._audit("scheduler.retry", actor, True, task_id=task.id, from_state=state, to_state=state, payload={"reason": reason, "retryCount": sched["retryCount"]})
+        await self._audit("scheduler.retry", actor, True, task_id=task.id, from_state=state, to_state=state, payload={"reason": reason, "retryCount": sched["retryCount"]})
         return {"ok": True, "message": f"{task.id} 已触发重试派发", "retryCount": sched["retryCount"]}
 
     async def scheduler_escalate(self, task_id: str, reason: str = "", actor: ActorContext | None = None) -> dict[str, Any]:
@@ -690,7 +691,7 @@ class TaskService:
         allowed, deny_reason = authorize_scheduler(actor, "escalate")
         if not allowed:
             raise PermissionError(deny_reason)
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         state = canonicalize_state(task_dict.get("state"))
         if state in TERMINAL_STATES:
@@ -714,7 +715,7 @@ class TaskService:
             meta=self._event_meta(actor, task, {"level": next_level}),
             dedupe_key=f"scheduler-escalate:{task.id}:v{task.state_version}:level{next_level}",
         )
-        self._audit("scheduler.escalate", actor, True, task_id=task.id, from_state=state, to_state=state, target_agent=target, payload={"reason": reason, "level": next_level})
+        await self._audit("scheduler.escalate", actor, True, task_id=task.id, from_state=state, to_state=state, target_agent=target, payload={"reason": reason, "level": next_level})
         return {"ok": True, "message": f"{task.id} 已升级至{target_label}", "escalationLevel": next_level}
 
     async def scheduler_rollback(self, task_id: str, reason: str = "", actor: ActorContext | None = None) -> dict[str, Any]:
@@ -722,7 +723,7 @@ class TaskService:
         allowed, deny_reason = authorize_scheduler(actor, "rollback")
         if not allowed:
             raise PermissionError(deny_reason)
-        task = await self._get_task(task_id)
+        task = await self._get_task(task_id, for_update=True)
         task_dict = task.to_dict()
         sched = self._ensure_scheduler(task_dict)
         snapshot = sched.get("snapshot") or {}
@@ -745,7 +746,7 @@ class TaskService:
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
         await self._publish_state_event(task, actor, old_state, reason or "scheduler rollback")
-        self._audit("scheduler.rollback", actor, True, task_id=task.id, from_state=old_state, to_state=snap_state, payload={"reason": reason})
+        await self._audit("scheduler.rollback", actor, True, task_id=task.id, from_state=old_state, to_state=snap_state, payload={"reason": reason})
         return {"ok": True, "message": f"{task.id} 已回滚到 {snap_state}"}
 
     async def scheduler_scan(self, threshold_sec: int = 600, actor: ActorContext | None = None) -> dict[str, Any]:
@@ -1028,8 +1029,13 @@ class TaskService:
         nums = [int(item.split("-")[-1]) for item in ids if item.split("-")[-1].isdigit()]
         return f"{prefix}{(max(nums) + 1 if nums else 1):03d}"
 
-    async def _get_task(self, task_id: str) -> Task:
-        task = await self.db.get(Task, task_id)
+    async def _get_task(self, task_id: str, *, for_update: bool = False) -> Task:
+        if for_update:
+            stmt = select(Task).where(Task.id == task_id).with_for_update()
+            result = await self.db.execute(stmt)
+            task = result.scalar_one_or_none()
+        else:
+            task = await self.db.get(Task, task_id)
         if task is None:
             raise ValueError(f"Task not found: {task_id}")
         return task
@@ -1068,7 +1074,7 @@ class TaskService:
         except ValueError:
             return None
 
-    def _audit(
+    async def _audit(
         self,
         action: str,
         actor: ActorContext,
@@ -1080,7 +1086,7 @@ class TaskService:
         target_agent: str = "",
         deny_reason: str = "",
         payload: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         entry = build_audit_entry(
             task_id=task_id,
             action=action,
@@ -1093,3 +1099,39 @@ class TaskService:
             payload=payload,
         )
         log.info("task_audit=%s", json.dumps(entry, ensure_ascii=False))
+        try:
+            await self._persist_task_audit(entry)
+        except Exception:
+            log.exception("task audit persistence failed action=%s task_id=%s", action, task_id)
+        return entry
+
+    async def _persist_task_audit(self, entry: dict[str, Any]) -> None:
+        try:
+            from ..db import async_session
+            from ..models.task_audit import TaskAudit
+        except Exception:
+            return
+
+        async with async_session() as audit_db:
+            record = TaskAudit(
+                audit_id=uuid.UUID(str(entry["audit_id"])),
+                ts=self._parse_iso(entry.get("ts")) or datetime.now(timezone.utc),
+                request_id=str(entry.get("request_id") or ""),
+                task_id=str(entry.get("task_id") or ""),
+                action=str(entry.get("action") or ""),
+                actor_id=str(entry.get("actor_id") or ""),
+                actor_type=str(entry.get("actor_type") or "agent"),
+                source=str(entry.get("source") or "unknown"),
+                signature_verified=bool(entry.get("signature_verified")),
+                from_state=str(entry.get("from_state") or ""),
+                to_state=str(entry.get("to_state") or ""),
+                target_agent=str(entry.get("target_agent") or ""),
+                allowed=bool(entry.get("allowed")),
+                deny_reason=str(entry.get("deny_reason") or ""),
+                policy_version=str(entry.get("policy_version") or ""),
+                payload=dict(entry.get("payload") or {}),
+                payload_hash=str(entry.get("payload_hash") or ""),
+                payload_summary=str(entry.get("payload_summary") or ""),
+            )
+            audit_db.add(record)
+            await audit_db.commit()

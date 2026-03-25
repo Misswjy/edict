@@ -23,85 +23,104 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-# 添加 backend 路径
-sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+BACKEND_ROOT = Path(__file__).resolve().parents[1] / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
-from sqlalchemy import text
-from app.db import engine, async_session, Base
-from app.models.task import Task, TaskState
+from app.task_contract import TaskState, canonicalize_lane, canonicalize_state, ensure_task_shape
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 log = logging.getLogger("migrate")
 
-# 旧版状态 → Edict TaskState
-STATE_MAP = {
-    "Sili": TaskState.Sili,
-    "Zhongshu": TaskState.Zhongshu,
-    "Menxia": TaskState.Menxia,
-    "Assigned": TaskState.Assigned,
-    "Next": TaskState.Next,
-    "Doing": TaskState.Doing,
-    "Review": TaskState.Review,
-    "Done": TaskState.Done,
-    "Blocked": TaskState.Blocked,
-    "Cancelled": TaskState.Cancelled,
-    "Pending": TaskState.Pending,
-    # Fallbacks
-    "Inbox": TaskState.Sili,
-    "": TaskState.Sili,
+LEGACY_STATE_FALLBACKS = {
+    "Inbox": TaskState.Sili.value,
+    "Todo": TaskState.Pending.value,
+    "": TaskState.Pending.value,
 }
 
 
-def parse_old_task(old: dict) -> dict:
-    """将旧版 task JSON 转换为 Edict Task 参数。"""
-    state_str = old.get("state", "Sili")
-    state = STATE_MAP.get(state_str, TaskState.Sili)
+def parse_legacy_datetime(value: str | None, fallback: datetime | None = None) -> datetime:
+    raw = str(value or "").strip()
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return fallback or datetime.now(timezone.utc)
 
-    legacy_id = old.get("id", "")
-    title = old.get("title", "未命名任务")
 
-    # 解析时间
-    updated_str = old.get("updatedAt", "")
+def coerce_task_state(value: str | None) -> TaskState:
+    raw = str(value or "").strip()
+    candidate = LEGACY_STATE_FALLBACKS.get(raw, raw)
+    candidate = canonicalize_state(candidate) or TaskState.Pending.value
     try:
-        updated_at = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        updated_at = datetime.now(timezone.utc)
+        return TaskState(candidate)
+    except ValueError:
+        return TaskState.Pending
 
+
+def parse_old_task(old: dict) -> dict:
+    """将旧版 task JSON 转换为当前 ORM 对齐的 Task 参数。"""
+    raw = dict(old or {})
+    original_state = raw.get("state")
+    if "consult_log" in raw and "consultLog" not in raw:
+        raw["consultLog"] = raw["consult_log"]
+    if "scheduler" in raw and "_scheduler" not in raw:
+        raw["_scheduler"] = raw["scheduler"]
+    normalized = ensure_task_shape(raw)
+    task_id = str(normalized.get("id") or f"LEGACY-{uuid.uuid4().hex[:12].upper()}")
+    created_at = parse_legacy_datetime(normalized.get("createdAt"), fallback=parse_legacy_datetime(normalized.get("updatedAt")))
+    updated_at = parse_legacy_datetime(normalized.get("updatedAt"), fallback=created_at)
+    archived = bool(normalized.get("archived"))
+    archived_at = parse_legacy_datetime(old.get("archivedAt"), fallback=updated_at) if archived and old.get("archivedAt") else None
+    state = coerce_task_state(original_state or normalized.get("state"))
     return {
-        "trace_id": str(uuid.uuid4()),
-        "title": title,
-        "description": old.get("now", ""),
-        "priority": "中",
+        "id": task_id,
+        "title": str(normalized.get("title") or "未命名任务"),
+        "official": str(normalized.get("official") or ""),
+        "org": str(normalized.get("org") or ""),
         "state": state,
-        "assignee_org": old.get("org", None),
-        "creator": old.get("official", "emperor"),
-        "tags": [legacy_id] if legacy_id else [],
-        "flow_log": old.get("flow_log", []),
-        "progress_log": old.get("progress_log", []),
-        "todos": old.get("todos", []),
-        "scheduler": old.get("scheduler", None),
-        "meta": {
-            "legacy_id": legacy_id,
-            "legacy_state": state_str,
-            "legacy_output": old.get("output", ""),
-            "legacy_ac": old.get("ac", ""),
-            "legacy_eta": old.get("eta", ""),
-            "legacy_block": old.get("block", ""),
-        },
-        "created_at": updated_at,  # 旧版没有 created_at，用 updated_at 近似
+        "now": str(normalized.get("now") or ""),
+        "eta": str(normalized.get("eta") or "-"),
+        "block": str(normalized.get("block") or "无"),
+        "output": str(normalized.get("output") or ""),
+        "ac": str(normalized.get("ac") or ""),
+        "priority": str(normalized.get("priority") or "normal"),
+        "lane": canonicalize_lane(normalized.get("lane")),
+        "review_round": int(normalized.get("review_round") or 0),
+        "state_version": max(1, int(normalized.get("_stateVersion") or 1)),
+        "archived": archived,
+        "archived_at": archived_at,
+        "flow_log": list(normalized.get("flow_log") or []),
+        "progress_log": list(normalized.get("progress_log") or []),
+        "consult_log": list(normalized.get("consultLog") or []),
+        "todos": list(normalized.get("todos") or []),
+        "scheduler": dict(normalized.get("_scheduler") or {}),
+        "template_id": str(normalized.get("templateId") or ""),
+        "template_params": dict(normalized.get("templateParams") or {}),
+        "target_dept": str(normalized.get("targetDept") or ""),
+        "prev_state": str(normalized.get("_prev_state") or ""),
+        "created_at": created_at,
         "updated_at": updated_at,
     }
 
 
 async def migrate(file_path: Path, dry_run: bool = False):
     """执行迁移。"""
+    from app.db import async_session
+    from app.models.task import Task
+
     if not file_path.exists():
         log.error(f"数据文件不存在: {file_path}")
         return
 
     # 读取旧版数据
     raw = file_path.read_text(encoding="utf-8")
-    old_tasks = json.loads(raw)
+    payload = json.loads(raw)
+    old_tasks = payload.get("tasks", payload) if isinstance(payload, dict) else payload
+    if not isinstance(old_tasks, list):
+        raise ValueError("tasks_source.json 必须是任务数组或包含 tasks 数组的对象")
     log.info(f"读取到 {len(old_tasks)} 个旧版任务")
 
     # 统计
@@ -118,7 +137,7 @@ async def migrate(file_path: Path, dry_run: bool = False):
         log.info("=== DRY RUN 模式，不写入数据库 ===")
         for old in old_tasks:
             params = parse_old_task(old)
-            log.info(f"  [{params['meta']['legacy_id']}] {params['title'][:40]} → {params['state'].value}")
+            log.info(f"  [{params['id']}] {params['title'][:40]} → {params['state'].value}")
         log.info(f"Dry run 完成: {stats['total']} 个任务待迁移")
         return
 
@@ -127,22 +146,16 @@ async def migrate(file_path: Path, dry_run: bool = False):
         for old in old_tasks:
             try:
                 params = parse_old_task(old)
-                legacy_id = params["meta"]["legacy_id"]
-
-                # 检查是否已迁移
-                from sqlalchemy import select
-                existing = await db.execute(
-                    select(Task).where(Task.tags.contains([legacy_id]))
-                )
-                if existing.scalars().first():
-                    log.debug(f"跳过已存在: {legacy_id}")
+                existing = await db.get(Task, params["id"])
+                if existing:
+                    log.debug(f"跳过已存在: {params['id']}")
                     stats["skipped"] += 1
                     continue
 
                 task = Task(**params)
                 db.add(task)
                 stats["migrated"] += 1
-                log.info(f"✅ 迁移: [{legacy_id}] {params['title'][:40]} → {params['state'].value}")
+                log.info(f"✅ 迁移: [{params['id']}] {params['title'][:40]} → {params['state'].value}")
 
             except Exception as e:
                 log.error(f"❌ 迁移失败: {old.get('id', '?')}: {e}")

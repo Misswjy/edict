@@ -1,7 +1,9 @@
-"""Todo 模型 — 结构化子任务。
+"""Todo 模型 — 结构化子任务投影。
 
 遵循 Edict Architecture §4 Todo JSON Schema。
 支持层级结构（parent_id）和 checkpoint 跟踪。
+当前迁移阶段由 ``tasks.todos`` 作为任务快照真相源；
+本表保留给后续事件投影与查询优化使用。
 """
 
 import uuid
