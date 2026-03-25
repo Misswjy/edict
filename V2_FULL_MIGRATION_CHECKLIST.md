@@ -128,11 +128,11 @@
 
 ### P0-1. 冻结制度契约与字段语义
 
-- [ ] 明确 `config/institution_schema.json` 为状态机、权限矩阵、快车道、中央队列 SLA 的唯一真相源
-- [ ] 明确 v2 对外任务快照格式以 `Task.to_dict()` 为基准
-- [ ] 明确 legacy 字段与 v2 字段的一一映射关系
-- [ ] 明确 `todos` 的最终真相源策略
-- [ ] 明确 audit 的最终存储模型
+- [x] 已完成✅ 明确 `config/institution_schema.json` 为状态机、权限矩阵、快车道、中央队列 SLA 的唯一真相源
+- [x] 已完成✅ 明确 v2 对外任务快照格式以 `Task.to_dict()` 为基准
+- [x] 已完成✅ 明确 legacy 字段与 v2 字段的一一映射关系
+- [x] 已完成✅ 明确 `todos` 的最终真相源策略
+- [x] 已完成✅ 明确 audit 的最终存储模型
 
 涉及文件：
 
@@ -151,11 +151,18 @@
 
 - 在迁移中途修改状态名或字段语义，会导致前后端、迁移脚本、事件回放同时失效
 
+落地结果：
+
+- 字段冻结与映射说明已写入 `docs/task-dispatch-architecture.md`
+- `edict/backend/app/task_contract.py` 已统一 snake_case 存储别名与 camelCase API 快照映射
+- `edict/backend/app/models/todo.py` 已标明当前以 `tasks.todos` 为真相源
+- `edict/backend/app/models/task_audit.py` + `edict/migration/versions/002_task_audits.py` 已落地 durable audit
+
 ### P0-2. 建立完整 API inventory 与 parity 表
 
-- [ ] 盘点前端实际调用的全部 `/api/*`
-- [ ] 标记每个端点是“已在 v2”“待迁移”“废弃”“可合并”
-- [ ] 输出 legacy -> v2 路由映射表
+- [x] 已完成✅ 盘点前端实际调用的全部 `/api/*`
+- [x] 已完成✅ 标记每个端点是“已在 v2”“待迁移”“废弃”“可合并”
+- [x] 已完成✅ 输出 legacy -> v2 路由映射表
 
 涉及文件：
 
@@ -171,6 +178,42 @@
 风险点：
 
 - 长尾管理类接口漏迁，会导致 UI 进入“主流程可用、边角全坏”的状态
+
+当前 inventory / parity：
+
+| 前端调用 | 现状 | v2 去向 |
+|---|---|---|
+| `/api/live-status` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/task-activity/{id}` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/scheduler-state/{id}` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/queue-metrics` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/create-task` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/task-action` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/review-action` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/advance-state` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/task-consult` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/archive-task` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/task-todos` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/scheduler-scan` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/scheduler-retry` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/scheduler-escalate` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/scheduler-rollback` | 已在 v2 | `edict/backend/app/api/dashboard.py` |
+| `/api/agent-config` | 已迁入 v2 兼容读接口 | `edict/backend/app/api/agents.py` |
+| `/api/agents-status` | 已迁入 v2 兼容读接口 | `edict/backend/app/api/agents.py` |
+| `/api/model-change-log` | 已迁入 v2 兼容读接口 | `edict/backend/app/api/models.py` |
+| `/api/officials-stats` | 已迁入 v2 兼容读接口 | `edict/backend/app/api/officials.py` |
+| `/api/morning-brief` | 已迁入 v2 兼容读接口 | `edict/backend/app/api/morning.py` |
+| `/api/morning-config` | 已迁入 v2 兼容读接口 | `edict/backend/app/api/morning.py` |
+| `/api/skill-content/{agentId}/{skillName}` | 已迁入 v2 兼容读接口 | `edict/backend/app/api/skills.py` |
+| `/api/remote-skills-list` | 已迁入 v2 兼容读接口 | `edict/backend/app/api/skills.py` |
+| `/api/set-model` | 待迁移 | legacy write，目标 `admin_actions.py` |
+| `/api/set-dispatch-channel` | 待迁移 | legacy write，目标 `admin_actions.py` |
+| `/api/agent-wake` | 待迁移 | legacy write，目标 `admin_actions.py` |
+| `/api/add-skill` | 待迁移 | legacy write，目标 `skills_service.py` |
+| `/api/add-remote-skill` | 待迁移 | legacy write，目标 `skills_service.py` |
+| `/api/update-remote-skill` | 待迁移 | legacy write，目标 `skills_service.py` |
+| `/api/remove-remote-skill` | 待迁移 | legacy write，目标 `skills_service.py` |
+| `/api/court-discuss/*` | 待迁移 | 目标 `court_discuss_service.py` + `api/court_discuss.py` |
 
 ### P0-3. 设计切流与回滚闸门
 
@@ -203,10 +246,10 @@
 
 #### P1-1. 统一任务快照模型
 
-- [ ] 让 `edict/backend/app/models/task.py` 与 `edict/backend/app/task_contract.py` 完全对齐
-- [ ] 统一 snake_case 存储与 camelCase 对外输出映射
-- [ ] 明确 `consult_log <-> consultLog`、`scheduler <-> _scheduler`、`prev_state <-> _prev_state` 映射
-- [ ] 明确 `created_at/updated_at` 与 legacy `createdAt/updatedAt` 的转换规则
+- [x] 已完成✅ 让 `edict/backend/app/models/task.py` 与 `edict/backend/app/task_contract.py` 完全对齐
+- [x] 已完成✅ 统一 snake_case 存储与 camelCase 对外输出映射
+- [x] 已完成✅ 明确 `consult_log <-> consultLog`、`scheduler <-> _scheduler`、`prev_state <-> _prev_state` 映射
+- [x] 已完成✅ 明确 `created_at/updated_at` 与 legacy `createdAt/updatedAt` 的转换规则
 
 涉及文件：
 
@@ -225,9 +268,9 @@
 
 #### P1-2. 决定 `todos` 最终存储策略
 
-- [ ] 决定短期内以 `tasks.todos` 还是独立 `todos` 表为真相源
+- [x] 已完成✅ 决定短期内以 `tasks.todos` 还是独立 `todos` 表为真相源
+- [x] 已完成✅ 若先不启用独立 `todos` 表，则文档标明其仅用于未来扩展
 - [ ] 若保留独立 `todos` 表，则实现可靠双写或异步投影
-- [ ] 若先不启用独立 `todos` 表，则文档标明其仅用于未来扩展
 
 涉及文件：
 
@@ -246,9 +289,9 @@
 
 #### P1-3. 补齐 durable audit 模型
 
-- [ ] 新增任务审计表或通用 audit 表
-- [ ] 将 `TaskService._audit()` 从纯日志改为“数据库持久化 + 日志输出”
-- [ ] 支持按 `task_id / actor / action / allowed` 查询
+- [x] 已完成✅ 新增任务审计表或通用 audit 表
+- [x] 已完成✅ 将 `TaskService._audit()` 从纯日志改为“数据库持久化 + 日志输出”
+- [x] 已完成✅ 支持按 `task_id / actor / action / allowed` 查询
 
 涉及文件：
 
@@ -270,7 +313,7 @@
 
 #### P1-4. 完成任务控制面 parity
 
-- [ ] 保持并稳定以下 v2 兼容接口：
+- [x] 已完成✅ 保持并稳定以下 v2 兼容接口：
   - `/api/live-status`
   - `/api/task-activity/{task_id}`
   - `/api/scheduler-state/{task_id}`
@@ -302,7 +345,7 @@
 
 #### P1-5. 迁移 legacy-only 读接口
 
-- [ ] 新增或完善 v2 实现：
+- [x] 已完成✅ 新增或完善 v2 实现：
   - `/api/agent-config`
   - `/api/model-change-log`
   - `/api/officials-stats`
@@ -329,9 +372,20 @@
 
 - 如果这些接口仍旧回读 JSON，则“去 legacy”只是表面替换
 
+当前进度：
+
+- [x] 已完成✅ `/api/agent-config` 已迁入 FastAPI，并优先从 OpenClaw runtime/workspace 推导配置
+- [x] 已完成✅ `/api/agents-status` 已迁入 FastAPI，并直接读取 runtime 进程 / session 状态
+- [x] 已完成✅ `/api/officials-stats` 已迁入 FastAPI，并改为基于 Postgres `tasks` + runtime session 聚合
+- [x] 已完成✅ `/api/skill-content/{agentId}/{skillName}` 已迁入 FastAPI，并直接读取 workspace skill 文件
+- [x] 已完成✅ `/api/remote-skills-list` 已迁入 FastAPI，并直接扫描 workspace 远程 skill 元数据
+- [x] 已完成✅ `/api/model-change-log` 已改为优先读取 durable audit `task_audits(action=config.set_model)`，并在迁移脚本中补入 legacy 历史
+- [x] 已完成✅ `/api/morning-brief` / `/api/morning-config` 已改为优先读取 durable audit snapshot，并补齐 v2 保存/刷新入口
+- [x] 已完成✅ P1-5 整体验收完成：legacy-only 读接口已迁入 FastAPI，`data/*.json` 仅保留兼容 shadow / 导入来源
+
 #### P1-6. 迁移 legacy-only 写接口
 
-- [ ] 新增或完善 v2 实现：
+- [x] 已完成✅ 新增或完善 v2 实现：
   - `/api/set-model`
   - `/api/set-dispatch-channel`
   - `/api/agent-wake`
@@ -353,6 +407,13 @@
 风险点：
 
 - 这些动作多数涉及宿主机文件、OpenClaw 配置与 workspace，需要把副作用模型设计清楚
+
+落地结果：
+
+- `edict/backend/app/api/admin_actions.py` 已接管 `/api/set-model`、`/api/set-dispatch-channel`、`/api/agent-wake`
+- `edict/backend/app/api/skills.py` 已补齐 `/api/add-skill`、`/api/add-remote-skill`、`/api/update-remote-skill`、`/api/remove-remote-skill`
+- `edict/backend/app/services/admin_action_service.py`、`edict/backend/app/services/skills_service.py` 已替代 `dashboard/server.py` 中对应写逻辑
+- 所有上述动作均接入 durable audit，并对本地 JSON/OpenClaw 配置使用原子写入
 
 #### P1-7. 迁移朝堂议政功能
 

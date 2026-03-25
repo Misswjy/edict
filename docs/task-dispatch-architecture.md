@@ -16,6 +16,8 @@
 | API / 前端字段 | API 对外保持兼容字段：`consultLog`、`_scheduler`、`_prev_state`、`_stateVersion`、`templateId`、`templateParams`、`targetDept`、`createdAt`、`updatedAt` |
 | todos 真相源 | 迁移期以 `tasks.todos` 作为唯一权威快照；独立 `todos` 表只做未来事件投影与查询优化，不参与当前写入真相源 |
 | 审计真相源 | 任务动作审计落 PostgreSQL `task_audits`，同时保留应用日志镜像便于排障 |
+| 模型变更历史 | `/api/model-change-log` 优先投影 `task_audits(action=config.set_model)`；legacy `data/model_change_log.json` 只作为迁移导入源 |
+| 晨报控制面 | `/api/morning-*` 优先投影 `task_audits(action=morning.*.snapshot)`；legacy `data/morning_*.json` 仅作为兼容 shadow 与采集脚本输入 |
 
 这意味着：
 

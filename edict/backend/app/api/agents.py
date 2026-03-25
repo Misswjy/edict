@@ -7,9 +7,11 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from ..generated.institution_schema import AGENT_DIRECTORY
+from ..services.agent_config_service import build_agent_config_payload, get_agents_status_payload
 
 log = logging.getLogger("edict.api.agents")
 router = APIRouter()
+compat_router = APIRouter()
 
 AGENT_META = {
     agent["id"]: {
@@ -67,3 +69,13 @@ async def get_agent_config(agent_id: str):
         return {"agent_id": agent_id, "config": agent_config}
     except (json.JSONDecodeError, IOError):
         return {"agent_id": agent_id, "config": {}}
+
+
+@compat_router.get("/agent-config")
+async def agent_config():
+    return build_agent_config_payload()
+
+
+@compat_router.get("/agents-status")
+async def agents_status():
+    return get_agents_status_payload()
