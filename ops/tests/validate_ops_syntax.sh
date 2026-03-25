@@ -20,10 +20,12 @@ done
 
 python3 -m py_compile \
   "ops/tests/browser_regression_v2.py" \
+  "ops/tests/observe_stage5_window.py" \
   "ops/cutover/render_stage_routing.py" \
   "ops/cutover/export_v2_delta.py" \
   "ops/cutover/merge_delta_into_legacy.py"
 echo "[ok] py_compile ops/tests/browser_regression_v2.py"
+echo "[ok] py_compile ops/tests/observe_stage5_window.py"
 echo "[ok] py_compile ops/cutover/render_stage_routing.py"
 echo "[ok] py_compile ops/cutover/export_v2_delta.py"
 echo "[ok] py_compile ops/cutover/merge_delta_into_legacy.py"

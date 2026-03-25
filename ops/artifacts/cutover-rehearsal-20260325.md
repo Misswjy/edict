@@ -64,3 +64,22 @@
 - Non-empty reinjection validation:
   - `bash ops/cutover/reinject_tasks_placeholder.sh --execute --backup-dir /tmp/edict-backups/20260325T084044Z --from 2026-03-25T08:58:47Z --to 2026-03-25T09:08:47Z --tasks-file /tmp/edict-rollback-window-live-status.json --audits-file data/task_audit_log.json --legacy-file data/tasks_source.json --delta-out /tmp/edict-reinject-window/v2_delta.json --merged-out /tmp/edict-reinject-window/tasks_source.merged.json --merge-report /tmp/edict-reinject-window/reinject_merge_report.json --out-plan /tmp/edict-reinject-window/reinject_plan.md`
   - merge report result: `added=1`, `taskId=JJC-20260325-003`, `action=added_from_delta`
+
+## Stage 5 observation window
+
+- Worker recovery:
+  started local `orchestrator` / `dispatcher` / `scheduler` workers against `edict_browser_regression`, bringing `/api/admin/health/deep` from `degraded` to `ok`
+- Observation command:
+  `python3 ops/tests/observe_stage5_window.py --backend-url http://127.0.0.1:8000 --frontend-url http://127.0.0.1:5173 --legacy-url http://127.0.0.1:7891/healthz --duration-sec 120 --interval-sec 15 --output ops/artifacts/stage5-observation-window/summary.json`
+- Result:
+  - window: `2026-03-25T09:29:47Z` -> `2026-03-25T09:31:48Z`
+  - `sampleCount=9`
+  - `failedSampleCount=0`
+  - every sample kept:
+    - backend `/health` = `ok`
+    - deep health = `ok`
+    - worker health = `ok`
+    - queue metrics = `ok`
+    - frontend `5173` = `200`
+    - legacy `7891` remained closed
+  - canary task `JJC-20260325-004` stayed visible through the whole window

@@ -1,0 +1,177 @@
+{
+  "startedAt": "2026-03-25T09:29:47.735900+00:00",
+  "finishedAt": "2026-03-25T09:31:48.191292+00:00",
+  "durationSec": 120,
+  "intervalSec": 15,
+  "backendUrl": "http://127.0.0.1:8000",
+  "frontendUrl": "http://127.0.0.1:5173",
+  "legacyUrl": "http://127.0.0.1:7891/healthz",
+  "requireLegacyDown": true,
+  "canary": {
+    "taskId": "JJC-20260325-004",
+    "title": "Stage5 观察窗口演练 #1774430987",
+    "createResult": {
+      "ok": true,
+      "taskId": "JJC-20260325-004",
+      "message": "旨意 JJC-20260325-004 已下达，正在派发给司礼监"
+    }
+  },
+  "sampleCount": 9,
+  "ok": true,
+  "failedSampleCount": 0,
+  "samples": [
+    {
+      "ts": "2026-03-25T09:29:47.810774+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    },
+    {
+      "ts": "2026-03-25T09:30:02.849405+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    },
+    {
+      "ts": "2026-03-25T09:30:17.896156+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    },
+    {
+      "ts": "2026-03-25T09:30:32.945461+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    },
+    {
+      "ts": "2026-03-25T09:30:47.990673+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    },
+    {
+      "ts": "2026-03-25T09:31:03.025613+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    },
+    {
+      "ts": "2026-03-25T09:31:18.105745+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    },
+    {
+      "ts": "2026-03-25T09:31:33.143438+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    },
+    {
+      "ts": "2026-03-25T09:31:48.191248+00:00",
+      "backendHealth": {
+        "status": "ok",
+        "version": "2.0.0",
+        "engine": "edict"
+      },
+      "deepHealthStatus": "ok",
+      "workersOk": true,
+      "metricsWorkersOk": true,
+      "queueOk": true,
+      "frontendStatus": 200,
+      "legacyPortOpen": false,
+      "canaryTaskPresent": true,
+      "liveStatusTaskCount": 4,
+      "ok": true
+    }
+  ]
+}

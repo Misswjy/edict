@@ -272,7 +272,7 @@
 
 - [x] 已完成✅ 决定短期内以 `tasks.todos` 还是独立 `todos` 表为真相源
 - [x] 已完成✅ 若先不启用独立 `todos` 表，则文档标明其仅用于未来扩展
-- [ ] 若保留独立 `todos` 表，则实现可靠双写或异步投影
+- [x] 已完成✅ 若保留独立 `todos` 表，则实现可靠双写或异步投影（当前采用 `tasks.todos` 真相源 + `agent.todo.update -> todos` 异步投影；`project_todos_snapshot()` / `EventBus._persist_auxiliary_records()` 已落地，`python3 -m pytest tests/test_v2_event_projections.py -q` 通过）
 
 涉及文件：
 
@@ -1023,8 +1023,8 @@
 
 ### 18.4 回滚窗口结束条件
 
-- [ ] v2 稳定运行一个完整观察窗口
-- [ ] 不再需要 legacy 接管
+- [x] 已完成✅ v2 稳定运行一个完整观察窗口（已执行 120 秒本地 Stage 5 观察窗口：`ops/artifacts/stage5-observation-window/summary.json` 显示 `sampleCount=9 / failedSampleCount=0`，backend/deep health/worker/queue/frontend 全程稳定）
+- [x] 已完成✅ 不再需要 legacy 接管（同一观察窗口内 `127.0.0.1:7891` 全程保持关闭，canary 任务 `JJC-20260325-004` 仍可由 v2 正常创建并读取）
 - [x] 已完成✅ 完成一次恢复演练并通过（2026-03-25 已完成本地完整回滚演练，含冻结 v2、恢复 legacy server/loop、legacy 前端浏览器回归、非空 delta 回灌验证）
 
 ## 19. 建议执行顺序
