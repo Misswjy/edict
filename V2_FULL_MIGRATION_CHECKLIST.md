@@ -1007,24 +1007,25 @@
 
 ### 18.3 回滚步骤
 
-- [ ] 先冻结 v2 写流量
-- [ ] 恢复前端到 legacy API
-- [ ] 恢复 legacy scheduler / loop
+- [x] 已完成✅ 先冻结 v2 写流量（已于 2026-03-25 本地回滚演练中执行 `ops/cutover/rollback_to_legacy.sh --execute --skip-compose --freeze-v2-cmd "kill 85039"`，验证 `127.0.0.1:8000` 回滚期间关闭）
+- [x] 已完成✅ 恢复前端到 legacy API（已构建 `/tmp/edict-legacy-frontend-dist` 指向 `http://127.0.0.1:7891`，并在 `127.0.0.1:5173` 通过浏览器回归）
+- [x] 已完成✅ 恢复 legacy scheduler / loop（已恢复 `python3 dashboard/server.py` + `scripts/run_loop.sh`，`/tmp/edict-legacy-loop.rehearsal.log` 持续刷新 `live_status.json`）
 - [x] 已完成✅ 将最近一次可用快照恢复到 `data/tasks_source.json`（已于 2026-03-25 执行 `ops/cutover/rollback_to_legacy.sh --execute`，从 `/tmp/edict-backups/20260325T084044Z/data/data.tar.gz` 恢复）
-- [ ] 根据需要回灌 v2 期间新增任务
+- [x] 已完成✅ 根据需要回灌 v2 期间新增任务（已用回滚窗口种子任务 `JJC-20260325-003` 做非空 delta 演练；`/tmp/edict-reinject-window/reinject_merge_report.json` 显示 `added=1`、`added_from_delta`）
 
 本地回滚演练状态：
 
 - 已执行 `ops/cutover/rollback_to_legacy.sh --execute`，并生成 `/tmp/edict-rollback-rehearsal/stage-manifest.json`、`/tmp/edict-rollback-rehearsal/.env.production.local`、`ops/cutover/v2_delta.latest.json`、`ops/cutover/tasks_source.merged.json`、`ops/cutover/reinject_merge_report.json`、`ops/cutover/reinject_plan.md`
 - 已验证 legacy 镜像可拉起并通过 `http://127.0.0.1:7891/healthz`
-- 当前本地演练未覆盖 compose 管理的 v2 停服 / frontend 容器回切，因此前三项保持未勾选
-- 当前本地快照导出结果为 `tasksSnapshotTotal=0`、`deltaTasksExported=0`，回灌脚手架已执行，但尚未覆盖“非空 delta 合并”场景，因此“根据需要回灌”保持未勾选
+- 已完成一轮本地进程模式的完整回滚演练：冻结 v2 backend、本地恢复 legacy server/loop、将 5173 前端切到 legacy API，并通过 `ops/artifacts/browser-regression-legacy-rollback/summary.json` 验证关键面板
+- 已完成非空 reinjection 合并验证：`/tmp/edict-reinject-window/reinject_merge_report.json` 显示 `JJC-20260325-003` 成功 `added_from_delta`
+- 回滚演练补充证据见 [ops/artifacts/cutover-rehearsal-20260325.md](ops/artifacts/cutover-rehearsal-20260325.md)
 
 ### 18.4 回滚窗口结束条件
 
 - [ ] v2 稳定运行一个完整观察窗口
 - [ ] 不再需要 legacy 接管
-- [ ] 完成一次恢复演练并通过
+- [x] 已完成✅ 完成一次恢复演练并通过（2026-03-25 已完成本地完整回滚演练，含冻结 v2、恢复 legacy server/loop、legacy 前端浏览器回归、非空 delta 回灌验证）
 
 ## 19. 建议执行顺序
 

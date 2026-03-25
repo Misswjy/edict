@@ -1,0 +1,31 @@
+{
+  "frontendUrl": "http://127.0.0.1:5173",
+  "apiUrl": "http://127.0.0.1:7891",
+  "healthUrl": "http://127.0.0.1:7891/healthz",
+  "seed": {
+    "task_id": "JJC-20260325-001",
+    "task_title": "浏览器回归验证：工部提交春耕水利计划 #1774429658",
+    "session_id": "892479aa",
+    "court_topic": "浏览器回归验证：是否准许春耕水利计划先行试点 #1774429658"
+  },
+  "screenshots": {
+    "edictBoard": "ops/artifacts/browser-regression-legacy-rollback/01-edict-board.png",
+    "taskDetail": "ops/artifacts/browser-regression-legacy-rollback/02-task-detail.png",
+    "models": "ops/artifacts/browser-regression-legacy-rollback/03-model-config.png",
+    "skills": "ops/artifacts/browser-regression-legacy-rollback/04-skills-config.png",
+    "morning": "ops/artifacts/browser-regression-legacy-rollback/05-morning-panel.png",
+    "officials": "ops/artifacts/browser-regression-legacy-rollback/08-officials-panel.png",
+    "courtSetup": "ops/artifacts/browser-regression-legacy-rollback/06-court-setup.png",
+    "courtSession": "ops/artifacts/browser-regression-legacy-rollback/07-court-session.png"
+  },
+  "checks": [
+    "edicts",
+    "task-detail",
+    "models",
+    "skills",
+    "morning",
+    "officials",
+    "court-setup",
+    "court-session"
+  ]
+}

@@ -44,3 +44,23 @@
   - Compose-managed v2 service stop was skipped because local rehearsal used a non-existent compose file placeholder
   - Frontend container restart in legacy proxy mode was also skipped for the same reason
   - Reinjection path executed, but current local snapshot exported `deltaTasksExported=0` (`tasksSnapshotTotal=0`, `changedTaskIds=19`), so no non-empty merge case was validated
+
+## Local full rollback rehearsal
+
+- Pre-step:
+  created rollback-window seed task `JJC-20260325-003` on v2 and captured `/tmp/edict-rollback-window-live-status.json`
+- Frontend build:
+  `VITE_API_URL=http://127.0.0.1:7891 npm --prefix edict/frontend run build -- --outDir /tmp/edict-legacy-frontend-dist`
+- Rollback command:
+  `bash ops/cutover/rollback_to_legacy.sh --execute --skip-compose --backup-dir /tmp/edict-backups/20260325T084044Z --legacy-api-url http://127.0.0.1:7891 --freeze-v2-cmd "kill 85039" --frontend-switch-cmd "pkill -f 'http.server 5173' || true; nohup python3 -m http.server 5173 --directory /tmp/edict-legacy-frontend-dist >/tmp/edict-legacy-frontend.log 2>&1 &" --start-legacy --legacy-loop-cmd "EDICT_DISABLE_HTTP_SCHEDULER_SCAN=1 EDICT_LEGACY_LOOP_LOG=/tmp/edict-legacy-loop.rehearsal.log bash scripts/run_loop.sh 5 999" --legacy-server-cmd "python3 dashboard/server.py"`
+- Runtime evidence:
+  - v2 backend port `8000` was closed after rollback freeze
+  - legacy server restored on `http://127.0.0.1:7891`
+  - legacy-targeted frontend restored on `http://127.0.0.1:5173`
+  - `scripts/run_loop.sh` kept refreshing snapshots; evidence in `/tmp/edict-legacy-loop.rehearsal.log`
+- Browser validation:
+  - `ops/tests/browser_regression_v2.py --frontend-url http://127.0.0.1:5173 --api-url http://127.0.0.1:7891 --health-url http://127.0.0.1:7891/healthz --output-dir ops/artifacts/browser-regression-legacy-rollback`
+  - passed with screenshots in `ops/artifacts/browser-regression-legacy-rollback/`
+- Non-empty reinjection validation:
+  - `bash ops/cutover/reinject_tasks_placeholder.sh --execute --backup-dir /tmp/edict-backups/20260325T084044Z --from 2026-03-25T08:58:47Z --to 2026-03-25T09:08:47Z --tasks-file /tmp/edict-rollback-window-live-status.json --audits-file data/task_audit_log.json --legacy-file data/tasks_source.json --delta-out /tmp/edict-reinject-window/v2_delta.json --merged-out /tmp/edict-reinject-window/tasks_source.merged.json --merge-report /tmp/edict-reinject-window/reinject_merge_report.json --out-plan /tmp/edict-reinject-window/reinject_plan.md`
+  - merge report result: `added=1`, `taskId=JJC-20260325-003`, `action=added_from_delta`

@@ -47,6 +47,22 @@ def _wait_for_url(url: str, *, label: str, timeout_sec: int = 60) -> None:
     raise AssertionError(f"{label} not ready within {timeout_sec}s: {last_error}")
 
 
+def _wait_for_any_url(urls: list[str], *, label: str, timeout_sec: int = 60) -> str:
+    deadline = time.time() + timeout_sec
+    last_error = ""
+    while time.time() < deadline:
+        for url in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    if 200 <= response.status < 500:
+                        return url
+                    last_error = f"{url} unexpected status {response.status}"
+            except Exception as exc:  # pragma: no cover - retry loop
+                last_error = f"{url}: {exc}"
+        time.sleep(1)
+    raise AssertionError(f"{label} not ready within {timeout_sec}s: {last_error}")
+
+
 def _wait_for_json_predicate(
     url: str,
     *,
@@ -131,6 +147,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run v2 browser regression against a running local stack.")
     parser.add_argument("--frontend-url", default="http://127.0.0.1:5173")
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--health-url", default="")
     parser.add_argument(
         "--output-dir",
         default=str(Path("ops") / "artifacts" / "browser-regression-v2"),
@@ -139,10 +156,15 @@ def main() -> None:
 
     frontend_url = args.frontend_url.rstrip("/")
     api_url = args.api_url.rstrip("/")
+    health_url = args.health_url.rstrip("/")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _wait_for_url(f"{api_url}/health", label="backend health")
+    health_candidates = [health_url] if health_url else [f"{api_url}/health", f"{api_url}/healthz"]
+    resolved_health_url = _wait_for_any_url(
+        [candidate for candidate in health_candidates if candidate],
+        label="backend health",
+    )
     _wait_for_url(frontend_url, label="frontend")
     seed = _seed_backend(api_url)
 
@@ -150,6 +172,7 @@ def main() -> None:
     summary = {
         "frontendUrl": frontend_url,
         "apiUrl": api_url,
+        "healthUrl": resolved_health_url,
         "seed": seed,
         "screenshots": screenshots,
         "checks": [],

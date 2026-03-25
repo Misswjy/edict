@@ -2,6 +2,7 @@
 set -euo pipefail
 
 EXECUTE=0
+SKIP_COMPOSE=0
 BACKUP_DIR="${BACKUP_DIR:-}"
 COMPOSE_FILE="${COMPOSE_FILE:-edict/docker-compose.yml}"
 FRONTEND_ENV_FILE="${FRONTEND_ENV_FILE:-edict/frontend/.env.production.local}"
@@ -16,6 +17,8 @@ START_LEGACY=0
 LEGACY_LOOP_CMD="${LEGACY_LOOP_CMD:-bash scripts/run_loop.sh}"
 LEGACY_SERVER_CMD="${LEGACY_SERVER_CMD:-python3 dashboard/server.py}"
 ROUTING_HELPER="${ROUTING_HELPER:-ops/cutover/render_stage_routing.py}"
+FREEZE_V2_CMD="${FREEZE_V2_CMD:-}"
+FRONTEND_SWITCH_CMD="${FRONTEND_SWITCH_CMD:-}"
 
 usage() {
   cat <<'EOF'
@@ -23,6 +26,7 @@ Usage: rollback_to_legacy.sh [options]
 
 Options:
   --execute                     Perform real rollback actions (default is dry-run)
+  --skip-compose                Skip docker compose stop/up steps (useful for local-process rehearsal)
   --backup-dir <dir>            Backup directory to restore
   --compose-file <file>         v2 compose file (default: edict/docker-compose.yml)
   --frontend-env-file <file>    Frontend production env file to pin same-origin /api routing
@@ -36,6 +40,8 @@ Options:
   --start-legacy                Start legacy loop/server in background (execute mode only)
   --legacy-loop-cmd <cmd>       Legacy loop start command
   --legacy-server-cmd <cmd>     Legacy server start command
+  --freeze-v2-cmd <cmd>         Optional custom command used to freeze v2 writes
+  --frontend-switch-cmd <cmd>   Optional custom command used to switch frontend to legacy build
   -h, --help                    Show this help
 EOF
 }
@@ -70,10 +76,27 @@ with urllib.request.urlopen(url, timeout=10) as response:
 PY
 }
 
+run_shell_cmd() {
+  local cmd="$1"
+  if [[ -z "$cmd" ]]; then
+    return 0
+  fi
+  if [[ "$EXECUTE" -eq 1 ]]; then
+    log "+ bash -lc $cmd"
+    bash -lc "$cmd"
+  else
+    log "[dry-run] bash -lc $cmd"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute)
       EXECUTE=1
+      shift
+      ;;
+    --skip-compose)
+      SKIP_COMPOSE=1
       shift
       ;;
     --backup-dir)
@@ -128,6 +151,14 @@ while [[ $# -gt 0 ]]; do
       LEGACY_SERVER_CMD="${2:?missing value}"
       shift 2
       ;;
+    --freeze-v2-cmd)
+      FREEZE_V2_CMD="${2:?missing value}"
+      shift 2
+      ;;
+    --frontend-switch-cmd)
+      FRONTEND_SWITCH_CMD="${2:?missing value}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -168,11 +199,14 @@ log "mode=$( [[ "$EXECUTE" -eq 1 ]] && echo execute || echo dry-run )"
 log "backup_dir=$BACKUP_DIR"
 
 log "phase 1/7: freeze v2 write traffic"
-if [[ -f "$COMPOSE_FILE" ]]; then
+if [[ "$SKIP_COMPOSE" -eq 1 ]]; then
+  log "compose stop skipped by --skip-compose"
+elif [[ -f "$COMPOSE_FILE" ]]; then
   run_cmd docker compose -f "$COMPOSE_FILE" stop frontend scheduler dispatcher orchestrator backend
 else
   log "WARN: compose file not found: $COMPOSE_FILE"
 fi
+run_shell_cmd "$FREEZE_V2_CMD"
 
 log "phase 2/7: restore legacy data snapshot"
 DATA_ARCHIVE="$BACKUP_DIR/data/data.tar.gz"
@@ -223,11 +257,14 @@ else
 fi
 
 log "phase 7/7: restart frontend in legacy proxy mode"
-if [[ -f "$COMPOSE_FILE" ]]; then
+if [[ "$SKIP_COMPOSE" -eq 1 ]]; then
+  log "compose frontend restart skipped by --skip-compose"
+elif [[ -f "$COMPOSE_FILE" ]]; then
   run_cmd docker compose -f "$COMPOSE_FILE" up -d --build frontend
 else
   log "WARN: compose file not found: $COMPOSE_FILE"
 fi
+run_shell_cmd "$FRONTEND_SWITCH_CMD"
 
 if [[ "$EXECUTE" -eq 1 ]]; then
   if http_check "$LEGACY_API_URL/healthz" >/dev/null 2>&1; then
