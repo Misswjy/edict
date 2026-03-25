@@ -874,7 +874,7 @@
 - [x] 已完成✅ `dashboard/server.py` 已接入 `ops/cutover/.legacy_write_frozen` 写保护；Stage 5 期间 legacy HTTP 写请求会返回只读错误，并由 `tests/test_server.py` 覆盖 GET/POST 回归
 - [x] 已完成✅ `scripts/file_lock.py` 已对 `tasks_source.json` 底层原子写统一接入 freeze guard，`save_tasks()` / `_atomic_update_tasks()` / `kanban_update.py` / `sync_from_openclaw_runtime.py` 均会在 Stage 5 停止落盘；`scripts/run_loop.sh` 也会跳过 legacy runtime sync 与 scheduler-scan
 - [x] 已完成✅ `edict/backend/app/api/legacy.py` 已默认下线：`app.main` 仅在显式设置 `EDICT_ENABLE_LEGACY_TASK_ROUTES=1` 时才挂载兼容路由，`edict/scripts/kanban_update_edict.py` 也已改为直接使用标准 `/api/tasks/*` 路由
-- [ ] 停止 `scripts/run_loop.sh` 和 JSON 轮询刷新
+- [x] 已完成✅ `scripts/run_loop.sh` 在 legacy freeze 生效时会直接退出，`scripts/refresh_live_data.py` 也会在只读阶段跳过 `live_status.json` 刷新；`tests/test_legacy_run_loop.py` 与 `tests/test_refresh_live_data.py` 覆盖该行为
 
 涉及文件：
 
@@ -931,10 +931,10 @@
 
 ### 17.1 必做测试
 
-- [ ] `pytest tests/test_task_contract.py -q`
-- [ ] `pytest tests/test_architecture_contracts.py -q`
-- [ ] `pytest tests/test_backend_dispatch.py -q`
-- [ ] 前端构建：`npm --prefix edict/frontend run build`
+- [x] 已完成✅ `pytest tests/test_task_contract.py -q`
+- [x] 已完成✅ `pytest tests/test_architecture_contracts.py -q`
+- [x] 已完成✅ `pytest tests/test_backend_dispatch.py -q`
+- [x] 已完成✅ 前端构建：`npm --prefix edict/frontend run build`
 - [ ] v2 集成测试：补充 FastAPI + Postgres + Redis 集成用例
 - [ ] 数据迁移 dry-run
 - [ ] 数据迁移正式导入后对账

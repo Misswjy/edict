@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-import json, pathlib, datetime, logging
-from file_lock import atomic_json_write, atomic_json_read
+import datetime
+import json
+import logging
+import pathlib
+
+from file_lock import atomic_json_read, atomic_json_write, legacy_write_freeze_marker_path
 from utils import read_json
 
 log = logging.getLogger('refresh')
@@ -18,7 +22,22 @@ def output_meta(path):
     return {"exists": True, "lastModified": ts}
 
 
+def _json_refresh_blocked():
+    marker = legacy_write_freeze_marker_path()
+    return marker.exists(), marker
+
+
 def main():
+    blocked, freeze_marker = _json_refresh_blocked()
+    if blocked:
+        log.info('legacy write freeze active, skip live_status.json refresh')
+        return {
+            'ok': True,
+            'skipped': True,
+            'readOnly': True,
+            'freezeMarker': str(freeze_marker),
+        }
+
     # 使用 officials_stats.json（与 sync_officials_stats.py 统一）
     officials_data = read_json(DATA / 'officials_stats.json', {})
     officials = officials_data.get('officials', []) if isinstance(officials_data, dict) else officials_data
@@ -116,6 +135,13 @@ def main():
 
     atomic_json_write(DATA / 'live_status.json', payload)
     log.info(f'updated live_status.json ({len(tasks)} tasks)')
+    return {
+        'ok': True,
+        'skipped': False,
+        'readOnly': False,
+        'taskCount': len(tasks),
+        'taskSource': payload['taskSource'],
+    }
 
 
 if __name__ == '__main__':

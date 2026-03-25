@@ -8,10 +8,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INTERVAL="${1:-15}"
-LOG="/tmp/sansheng_liubu_refresh.log"
-PIDFILE="/tmp/sansheng_liubu_refresh.pid"
+LOG="${EDICT_LEGACY_LOOP_LOG:-/tmp/sansheng_liubu_refresh.log}"
+PIDFILE="${EDICT_LEGACY_LOOP_PIDFILE:-/tmp/sansheng_liubu_refresh.pid}"
 MAX_LOG_SIZE=$((10 * 1024 * 1024))  # 10MB
 FREEZE_MARKER="${EDICT_LEGACY_WRITE_FREEZE_MARKER:-$SCRIPT_DIR/../ops/cutover/.legacy_write_frozen}"
+STOP_ON_FREEZE="${EDICT_STOP_LEGACY_LOOP_ON_FREEZE:-1}"
+
+legacy_loop_blocked() {
+  [[ "$STOP_ON_FREEZE" == "1" && -f "$FREEZE_MARKER" ]]
+}
+
+if legacy_loop_blocked; then
+  echo "ℹ️ legacy write freeze active，run_loop.sh 已停用"
+  exit 0
+fi
 
 # ── 单实例保护 ──
 if [[ -f "$PIDFILE" ]]; then
@@ -73,6 +83,10 @@ safe_run() {
 
 while true; do
   rotate_log
+  if legacy_loop_blocked; then
+    echo "$(date '+%H:%M:%S') [loop] ℹ️ legacy write freeze active，停止 legacy run_loop 与 JSON polling refresh" >> "$LOG"
+    exit 0
+  fi
   if [[ -f "$FREEZE_MARKER" ]]; then
     echo "$(date '+%H:%M:%S') [loop] ℹ️ legacy write freeze active，跳过 sync_from_openclaw_runtime.py" >> "$LOG"
   else
