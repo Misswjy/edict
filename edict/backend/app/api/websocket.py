@@ -22,6 +22,19 @@ router = APIRouter()
 
 # 活跃连接管理
 _connections: set[WebSocket] = set()
+_disconnect_total = 0
+
+
+def _record_disconnect():
+    global _disconnect_total
+    _disconnect_total += 1
+
+
+def get_websocket_metrics_snapshot() -> dict[str, int]:
+    return {
+        "activeConnections": len(_connections),
+        "disconnectTotal": int(_disconnect_total),
+    }
 
 
 @router.websocket("/ws")
@@ -46,8 +59,10 @@ async def websocket_endpoint(ws: WebSocket):
             _handle_client_messages(ws),
         )
     except WebSocketDisconnect:
+        _record_disconnect()
         log.info("WebSocket disconnected")
     except Exception as e:
+        _record_disconnect()
         log.error(f"WebSocket error: {e}")
     finally:
         _connections.discard(ws)
@@ -135,6 +150,7 @@ async def task_websocket(ws: WebSocket, task_id: str):
                 except Exception:
                     continue
     except WebSocketDisconnect:
+        _record_disconnect()
         pass
     finally:
         _connections.discard(ws)

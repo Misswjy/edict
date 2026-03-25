@@ -144,11 +144,34 @@ def test_analyze_migration_sources_reports_sidecars(tmp_path: Path):
         encoding="utf-8",
     )
     (data_dir / "agent_config.json").write_text(
-        json.dumps({"dispatchChannel": "slack"}),
+        json.dumps(
+            {
+                "dispatchChannel": "slack",
+                "agents": [
+                    {"id": "gongbu", "skills": []},
+                    {"id": "zhongshu", "skills": []},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    openclaw = tmp_path / "openclaw"
+    skill_workspace = openclaw / "workspace-gongbu" / "skills" / "remote-brain"
+    skill_workspace.mkdir(parents=True)
+    (skill_workspace / "SKILL.md").write_text("remote skill", encoding="utf-8")
+    (skill_workspace / ".source.json").write_text(
+        json.dumps(
+            {
+                "sourceUrl": "https://example.com/remote-brain/SKILL.md",
+                "description": "remote brainstorm",
+                "addedAt": "2026-03-25T00:00:00+00:00",
+                "lastUpdated": "2026-03-25T01:00:00+00:00",
+            }
+        ),
         encoding="utf-8",
     )
 
-    report = migrator.analyze_migration_sources(data_dir / "tasks_source.json")
+    report = migrator.analyze_migration_sources(data_dir / "tasks_source.json", remote_root=openclaw)
 
     assert report["tasks"]["total"] == 2
     assert report["tasks"]["archived"] == 1
@@ -159,3 +182,8 @@ def test_analyze_migration_sources_reports_sidecars(tmp_path: Path):
     assert report["sidecars"]["morningConfigPresent"] is True
     assert report["sidecars"]["morningBriefFiles"] == ["morning_brief_20260325.json"]
     assert report["sidecars"]["dispatchChannel"] == "slack"
+    skill_index = report["sidecars"]["skillIndex"]
+    assert skill_index["total"] == 0
+    assert skill_index["remoteSkillCount"] == 1
+    assert skill_index["remoteSkills"][0]["agentId"] == "gongbu"
+    assert any(entry["agent"] == "gongbu" for entry in skill_index["perAgent"])

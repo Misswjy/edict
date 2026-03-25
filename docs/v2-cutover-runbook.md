@@ -186,6 +186,16 @@ bash ops/cutover/cutover_to_v2.sh --execute --stage 5 \
   --v2-api-url http://localhost:8000
 ```
 
+## 9. Monitoring & Alerting Gate
+
+At every stage, run the monitoring checks tied to P1-16/P1-17 before trusting the cutover shift:
+- `curl -fsS http://127.0.0.1:8000/api/admin/health/deep` – validates Postgres, Redis, worker heartbeats, stream groups, queue metrics, and scheduler thresholds (`thresholds`, `workers`, `streams` payload).
+- `curl -fsS http://127.0.0.1:8000/api/metrics/prometheus` (or `curl -fsS http://127.0.0.1:8000/api/metrics/snapshot`) – ensures `edict_health_*`, `edict_worker_*`, `edict_stream_*`, `edict_stream_pending_total`, `edict_stream_lag_total`, `edict_stream_group_*`, and `edict_monitoring_up` are present and consistent with alert templates.
+- `curl -fsS http://127.0.0.1:8000/api/queue-metrics` – spot-check task volume, state distribution, central queue backlog, and fast lane counts.
+- `cat ops/alerts/prometheus-rules.example.yml` + `/api/metrics/prometheus` – confirm the alert file’s five rules (pending backlog, worker heartbeat loss, queue SLA breach, scheduler rollback/escalation burst, frontend websocket disconnect) align with the exported metric names/labels; see `ops/alerts/README.md` for rollout guidance.
+
+Failure in these checks freezes staging writes and triggers rollback: stop the stage, rerun diagnostics, and only advance once all metrics/alerts are healthy.
+
 Rollback command:
 
 ```bash
@@ -194,7 +204,7 @@ bash ops/cutover/rollback_to_legacy.sh --execute \
   --legacy-api-url http://127.0.0.1:7891
 ```
 
-## 9. Rollback-Window Data Reinjection
+## 10. Rollback-Window Data Reinjection
 
 Export rollback-window delta:
 
@@ -237,7 +247,7 @@ Deterministic merge policy:
 - if tie, keep later `updatedAt`
 - append `flow_log`/`progress_log`/`consultLog`/`todos` without duplicates
 
-## 10. Alerts
+## 11. Alerts
 
 Template rules:
 
@@ -252,7 +262,7 @@ Coverage:
 - rollback/escalation burst
 - frontend websocket disconnect spikes
 
-## 11. Notes
+## 12. Notes
 
 - All scripts default to dry-run mode.
 - Apply environment-specific credentials and paths before production usage.

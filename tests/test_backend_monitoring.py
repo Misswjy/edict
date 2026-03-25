@@ -123,11 +123,23 @@ class _ScalarResult:
         return self._value
 
 
-class _FakeDB:
-    def __init__(self, *, postgres_ok: bool = True):
-        self.postgres_ok = postgres_ok
+class _RowsResult:
+    def __init__(self, rows):
+        self._rows = list(rows)
 
-    async def execute(self, _stmt):
+    def all(self):
+        return list(self._rows)
+
+
+class _FakeDB:
+    def __init__(self, *, postgres_ok: bool = True, scheduler_rows: list[tuple[str, int]] | None = None):
+        self.postgres_ok = postgres_ok
+        self.scheduler_rows = list(scheduler_rows or [])
+
+    async def execute(self, stmt):
+        raw = str(stmt)
+        if "SELECT 1" not in raw:
+            return _RowsResult(self.scheduler_rows)
         if not self.postgres_ok:
             raise RuntimeError("postgres down")
         return _ScalarResult(1)
@@ -269,7 +281,25 @@ def test_prometheus_metrics_exposes_core_gauges(monkeypatch):
     async def _fake_get_event_bus():
         return bus
 
+    class _FakeQueueService:
+        def __init__(self, _db, _bus):
+            pass
+
+        async def get_queue_metrics(self):
+            return {
+                "ok": True,
+                "queues": {
+                    "menxia": {"waiting": 3},
+                    "shangshu": {"waiting": 1},
+                },
+            }
+
+    async def _fake_scheduler_actions(_db):
+        return {"scheduler.retry": 4, "scheduler.rollback": 2}
+
     monkeypatch.setattr(metrics, "get_event_bus", _fake_get_event_bus)
+    monkeypatch.setattr(metrics, "QueueMetricsFactory", lambda db, b: _FakeQueueService(db, b))
+    monkeypatch.setattr(metrics, "_collect_scheduler_action_totals", _fake_scheduler_actions)
     response = asyncio.run(metrics.metrics_prometheus(db=_FakeDB()))
     text = response.body.decode("utf-8")
 
@@ -277,4 +307,8 @@ def test_prometheus_metrics_exposes_core_gauges(monkeypatch):
     assert "edict_health_redis_up 1" in text
     assert 'edict_worker_up{instance="orch-a",status="running",worker="orchestrator"} 1' in text
     assert "edict_stream_group_pending" in text
+    assert 'edict_queue_waiting{label="menxia",queue="menxia"} 3.0' in text
+    assert 'edict_scheduler_actions_total{action="retry"} 4.0' in text
+    assert "edict_stream_pending_total 6.0" in text
+    assert "edict_frontend_ws_disconnect_total 0.0" in text
     assert "edict_monitoring_up 1" in text

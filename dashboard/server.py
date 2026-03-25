@@ -93,6 +93,7 @@ SCRIPTS = BASE.parent / 'scripts'
 TASKS_PATH = DATA / 'tasks_source.json'
 TASK_AUDIT_PATH = DATA / 'task_audit_log.json'
 CONTROL_PLANE_URL = (os.environ.get('EDICT_BACKEND_URL') or '').strip().rstrip('/')
+LEGACY_WRITE_FREEZE_MARKER = BASE.parent / 'ops' / 'cutover' / '.legacy_write_frozen'
 cd_set_store_path(DATA / 'court_discuss_sessions.json')
 
 # 静态资源 MIME 类型
@@ -149,6 +150,15 @@ def _legacy_write_allowed(handler) -> bool:
     if expected:
         return provided == expected
     return is_loopback_host(_legacy_client_host(handler))
+
+
+def _legacy_write_freeze_marker_path() -> pathlib.Path:
+    raw = (os.environ.get('EDICT_LEGACY_WRITE_FREEZE_MARKER') or '').strip()
+    return pathlib.Path(raw) if raw else LEGACY_WRITE_FREEZE_MARKER
+
+
+def _legacy_writes_frozen() -> bool:
+    return _legacy_write_freeze_marker_path().exists()
 
 
 def load_tasks():
@@ -1465,6 +1475,18 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw) if raw else {}
         except Exception:
             self.send_json({'ok': False, 'error': 'invalid JSON'}, 400)
+            return
+
+        if p.startswith('/api/') and _legacy_writes_frozen():
+            marker = _legacy_write_freeze_marker_path()
+            self.send_json(
+                {
+                    'ok': False,
+                    'error': 'legacy runtime is read-only during v2 cutover',
+                    'freezeMarker': str(marker),
+                },
+                423,
+            )
             return
 
         if p.startswith('/api/') and not _legacy_write_allowed(self):

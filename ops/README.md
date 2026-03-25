@@ -83,6 +83,17 @@ Rollback trigger points:
 - Stage 4: scheduler SLA misses, retry/escalation bursts exceed expected bounds.
 - Stage 5: observation window finds data drift that cannot be reconciled by delta reinjection.
 
+## Monitoring & Alerts
+
+Before moving to the next stage, exercise the P1-16/P1-17 monitoring gate:
+
+- `curl -fsS http://127.0.0.1:8000/api/admin/health/deep` (Postgres, Redis, worker heartbeat, stream group, queue, scheduler thresholds).
+- `curl -fsS http://127.0.0.1:8000/api/metrics/prometheus` (or `/api/metrics/snapshot`) to ensure `edict_health_*`, `edict_worker_*`, `edict_stream_*`, `edict_stream_pending_total`, `edict_stream_lag_total`, `edict_stream_group_*`, and `edict_monitoring_up` exist and reflect the stage.
+- `curl -fsS http://127.0.0.1:8000/api/queue-metrics` for task volume, state distribution, central queue waiting/overdue counts and fast lane summary.
+- `cat ops/alerts/prometheus-rules.example.yml` + `/api/metrics/prometheus` confirms the sample alert template covering pending backlog, worker heartbeat loss, central queue SLA, scheduler rollback/escalation bursts, and frontend WebSocket disconnect matches the exported metrics; see `ops/alerts/README.md` for rollout guidance and metric mappings.
+
+Any failure of these checks freezes the stage writes and is treated as a rollback trigger; rerun the diagnostics after correcting the issue.
+
 Rollback command (dry-run first):
 
 ```bash

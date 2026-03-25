@@ -29,6 +29,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.task_contract import TaskState, canonicalize_lane, canonicalize_state, ensure_task_shape
+from app.services.agent_config_service import list_remote_skills
 from app.services.court_discuss_service import (
     COURT_DISCUSS_SNAPSHOT_ACTION,
     normalize_session,
@@ -166,6 +167,32 @@ def _read_json(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
+
+
+def _build_skill_index(agent_config: dict[str, Any], remote_root: Path | None) -> dict[str, Any]:
+    agents = agent_config.get("agents") if isinstance(agent_config, dict) else []
+    total = 0
+    per_agent: list[dict[str, Any]] = []
+    for agent in agents or []:
+        skills = agent.get("skills") or []
+        total += len(skills)
+        agent_id = str(agent.get("id") or agent.get("label") or "")
+        per_agent.append({"agent": agent_id, "count": len(skills)})
+
+    remote_skills_count = 0
+    remote_skills_details: list[dict[str, Any]] = []
+    if remote_root and remote_root.exists():
+        payload = list_remote_skills(openclaw_home_override=remote_root)
+        if isinstance(payload, dict):
+            remote_skills_count = int(payload.get("count", 0))
+            remote_skills_details = list(payload.get("remoteSkills") or [])
+
+    return {
+        "total": total,
+        "perAgent": per_agent,
+        "remoteSkillCount": remote_skills_count,
+        "remoteSkills": remote_skills_details,
+    }
 
 
 def parse_legacy_dispatch_channel(entry: dict, *, source_path: Path) -> dict[str, object] | None:
@@ -307,7 +334,7 @@ def parse_legacy_court_session(entry: dict) -> dict[str, object] | None:
     }
 
 
-def analyze_migration_sources(file_path: Path) -> dict[str, Any]:
+def analyze_migration_sources(file_path: Path, *, remote_root: Path | None = None) -> dict[str, Any]:
     raw_payload = json.loads(file_path.read_text(encoding="utf-8"))
     old_tasks = raw_payload.get("tasks", raw_payload) if isinstance(raw_payload, dict) else raw_payload
     if not isinstance(old_tasks, list):
@@ -342,6 +369,7 @@ def analyze_migration_sources(file_path: Path) -> dict[str, Any]:
         if path.name != "morning_brief_config.json"
     ]
     agent_config = _read_json(file_path.parent / "agent_config.json", {})
+    skill_index = _build_skill_index(agent_config if isinstance(agent_config, dict) else {}, remote_root)
 
     report = {
         "source": str(file_path),
@@ -359,18 +387,19 @@ def analyze_migration_sources(file_path: Path) -> dict[str, Any]:
             "morningConfigPresent": bool(parse_legacy_morning_config(morning_config, source_path=morning_config_path)) if isinstance(morning_config, dict) else False,
             "morningBriefFiles": [path.name for path in morning_brief_files],
             "dispatchChannel": str(agent_config.get("dispatchChannel") or "").strip() if isinstance(agent_config, dict) else "",
+            "skillIndex": skill_index,
         },
     }
     return report
 
 
-async def migrate(file_path: Path, dry_run: bool = False):
+async def migrate(file_path: Path, dry_run: bool = False, remote_root: Path | None = None):
     """执行迁移。"""
     if not file_path.exists():
         log.error(f"数据文件不存在: {file_path}")
         return
 
-    report = analyze_migration_sources(file_path)
+    report = analyze_migration_sources(file_path, remote_root=remote_root)
 
     raw = file_path.read_text(encoding="utf-8")
     payload = json.loads(raw)
@@ -391,8 +420,12 @@ async def migrate(file_path: Path, dry_run: bool = False):
             "morningConfig": {"imported": 0, "skipped": 0},
             "morningBriefs": {"imported": 0, "skipped": 0},
             "dispatchChannel": {"imported": 0, "skipped": 0},
+            "skillIndex": {"local": 0, "remote": 0},
         },
     }
+    skill_index = report["sidecars"].get("skillIndex", {})
+    stats["audits"]["skillIndex"]["local"] = int(skill_index.get("total", 0) or 0)
+    stats["audits"]["skillIndex"]["remote"] = int(skill_index.get("remoteSkillCount", 0) or 0)
 
     if dry_run:
         log.info("=== DRY RUN 模式，不写入数据库 ===")
@@ -518,6 +551,7 @@ async def migrate(file_path: Path, dry_run: bool = False):
 
         await db.commit()
 
+    log.info("技能索引: 本地 %s, 远程 %s", stats["audits"]["skillIndex"]["local"], stats["audits"]["skillIndex"]["remote"])
     log.info(
         "迁移完成: 总计 %s, 成功 %s, 跳过 %s, 错误 %s, 审计=%s",
         stats["total"],
@@ -537,9 +571,17 @@ def main():
         help="Path to tasks_source.json",
     )
     parser.add_argument("--dry-run", action="store_true", help="Only analyze, don't write")
+    parser.add_argument("--remote-root", default="", help="Path to OpenClaw home (for remote skill metadata)")
+    parser.add_argument("--report-file", default="", help="Write the migration report JSON to this file")
     args = parser.parse_args()
 
-    asyncio.run(migrate(Path(args.file), dry_run=args.dry_run))
+    remote_root = Path(args.remote_root).expanduser() if args.remote_root else None
+    result = asyncio.run(
+        migrate(Path(args.file), dry_run=args.dry_run, remote_root=remote_root)
+    )
+    if args.report_file and result:
+        report_path = Path(args.report_file).expanduser()
+        report_path.write_text(json.dumps(result["report"], ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

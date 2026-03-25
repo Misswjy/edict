@@ -67,6 +67,62 @@ def test_healthz(tmp_path, monkeypatch):
     httpd.server_close()
 
 
+def test_legacy_freeze_marker_blocks_post_writes(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    freeze_marker = tmp_path / 'ops' / 'cutover' / '.legacy_write_frozen'
+    freeze_marker.parent.mkdir(parents=True)
+    freeze_marker.write_text('', encoding='utf-8')
+    monkeypatch.setenv('EDICT_LEGACY_WRITE_FREEZE_MARKER', str(freeze_marker))
+
+    from http.server import HTTPServer
+    port = 18972
+    httpd = HTTPServer(('127.0.0.1', port), srv.Handler)
+    t = threading.Thread(target=httpd.handle_request, daemon=True)
+    t.start()
+
+    time.sleep(0.1)
+    conn = HTTPConnection('127.0.0.1', port, timeout=5)
+    payload = json.dumps({'title': '只读期间不应创建', 'targetDept': '工部'})
+    conn.request('POST', '/api/create-task', body=payload, headers={'Content-Type': 'application/json'})
+    resp = conn.getresponse()
+    body = json.loads(resp.read())
+    conn.close()
+
+    assert resp.status == 423
+    assert body['ok'] is False
+    assert 'read-only' in body['error']
+    assert _read_tasks(data_dir) == []
+
+    httpd.server_close()
+
+
+def test_legacy_freeze_marker_still_allows_get_reads(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    freeze_marker = tmp_path / 'ops' / 'cutover' / '.legacy_write_frozen'
+    freeze_marker.parent.mkdir(parents=True)
+    freeze_marker.write_text('', encoding='utf-8')
+    monkeypatch.setenv('EDICT_LEGACY_WRITE_FREEZE_MARKER', str(freeze_marker))
+    (data_dir / 'live_status.json').write_text(json.dumps({'tasks': [{'id': 'JJC-READ-001'}], 'syncStatus': {'ok': True}}))
+
+    from http.server import HTTPServer
+    port = 18973
+    httpd = HTTPServer(('127.0.0.1', port), srv.Handler)
+    t = threading.Thread(target=httpd.handle_request, daemon=True)
+    t.start()
+
+    time.sleep(0.1)
+    conn = HTTPConnection('127.0.0.1', port, timeout=5)
+    conn.request('GET', '/api/live-status')
+    resp = conn.getresponse()
+    body = json.loads(resp.read())
+    conn.close()
+
+    assert resp.status == 200
+    assert body['tasks'][0]['id'] == 'JJC-READ-001'
+
+    httpd.server_close()
+
+
 def test_court_discuss_session_persists_across_reload(tmp_path, monkeypatch):
     srv, data_dir = _configure_server(tmp_path, monkeypatch)
 

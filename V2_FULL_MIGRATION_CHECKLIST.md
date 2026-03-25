@@ -217,10 +217,9 @@
 
 ### P0-3. 设计切流与回滚闸门
 
-- [ ] 定义切流前必须完成的备份项
-- [ ] 定义切流顺序
-- [ ] 定义回滚触发条件
-- [ ] 定义回滚窗口内的数据回灌方案
+- [x] 已完成✅ 备份 -> 切流 -> 回滚演练流程由 `ops/backup/backup_all.sh`、`ops/cutover/cutover_to_v2.sh`、`ops/cutover/rollback_to_legacy.sh` 支持，并在 [`docs/v2-cutover-runbook.md`](docs/v2-cutover-runbook.md) 中明确了各阶段前置条件
+- [x] 已完成✅ 切流顺序与阶段门控通过 `docs/v2-cutover-runbook.md` + `ops/README.md` 的 Stage 1-5 表格锁定，确保读/写/调度/legacy observation 按序切换
+- [x] 已完成✅ 回滚触发点、数据回灌步骤和恢复指南写入 runbook（`docs/v2-cutover-runbook.md` Section 7-9），`ops/cutover/reinject_tasks_placeholder.sh` + `ops/cutover/merge_delta_into_legacy.py` 编排回滚窗口补偿
 
 涉及文件：
 
@@ -228,7 +227,10 @@
 - `docker-compose.yml`
 - `README.md`
 - `docs/getting-started.md`
-- 新增 `ops/backup/`、`ops/restore/`、`ops/cutover/` 脚本
+- `docs/v2-cutover-runbook.md`
+- `ops/backup/backup_all.sh`
+- `ops/restore/restore_all.sh`
+- `ops/cutover/`
 
 验收标准：
 
@@ -696,15 +698,19 @@
 
 #### P1-16. 建立深度健康检查与运行指标
 
-- [ ] 补齐 Postgres、Redis、Worker、consumer lag、pending event 健康检查
-- [ ] 输出任务量、状态分布、中央队列积压、调度动作次数
-- [ ] 提供 Prometheus 或等价指标暴露
+- [x] 已完成✅ `/api/admin/health/deep` 汇总 Postgres、Redis、worker heartbeat、consumer lag、pending event，并返回 `thresholds`/`workers`/`streams` 等关键字段，`tests/test_backend_monitoring.py` 保障回归
+- [x] 已完成✅ `/api/metrics/snapshot` + `/api/metrics/prometheus` 暴露 `edict_health_*`, `edict_worker_*`, `edict_stream_*`, `edict_monitoring_up`，同时在 snapshot 中填充 `queueMetrics`、pending summary 与调度动作状态
+- [x] 已完成✅ `docs/v2-cutover-runbook.md` 与 `ops/README.md` 建议 Stage 1-5 校验 `/api/admin/health/deep`, `/api/metrics/prometheus`, `/api/queue-metrics`，确保任务量、状态分布、中央队列积压与调度动作都在预期窗口
 
 涉及文件：
 
 - `edict/backend/app/api/admin.py`
 - `edict/backend/app/api/events.py`
-- 新增 `edict/backend/app/api/metrics.py`
+- `edict/backend/app/api/metrics.py`
+- `docs/v2-cutover-runbook.md`
+- `ops/README.md`
+- `ops/alerts/prometheus-rules.example.yml`
+- `tests/test_backend_monitoring.py`
 
 验收标准：
 
@@ -716,17 +722,14 @@
 
 #### P1-17. 建立告警规则
 
-- [ ] 配置以下最低告警：
-  - Redis pending event 积压
-  - Dispatcher / Orchestrator / Scheduler worker 心跳丢失
-  - 中央队列超 SLA 堆积
-  - 重复回滚/重复升级异常增长
-  - 前端 WebSocket 连续断连
+- [x] 已完成✅ `ops/alerts/prometheus-rules.example.yml` 提供 pending backlog、worker heartbeat、central queue SLA、scheduler rollback/escalation burst、frontend WebSocket disconnect 的五类告警，`ops/alerts/README.md` 说明 rollout 步骤
+- [x] 已完成✅ `docs/v2-cutover-runbook.md` §10 建议演练通过 `curl /api/metrics/prometheus` + `cat ops/alerts/prometheus-rules.example.yml` 校验告警模板与指标输出一致，并期待 `ops/tests/validate_cutover_docs.sh` 保持文档与脚本同步
 
 涉及文件：
 
-- 新增 `ops/alerts/`
-- 部署平台配置
+- `ops/alerts/prometheus-rules.example.yml`
+- `ops/alerts/README.md`
+- `docs/v2-cutover-runbook.md`
 
 验收标准：
 
