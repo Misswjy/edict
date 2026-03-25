@@ -14,7 +14,7 @@
 | 对外任务快照 | `edict/backend/app/models/task.py` 的 `Task.to_dict()` 是唯一对外基准 |
 | 数据库存储 | Postgres `tasks` 使用 snake_case：`consult_log`、`scheduler`、`prev_state`、`state_version`、`template_id`、`target_dept` |
 | API / 前端字段 | API 对外保持兼容字段：`consultLog`、`_scheduler`、`_prev_state`、`_stateVersion`、`templateId`、`templateParams`、`targetDept`、`createdAt`、`updatedAt` |
-| todos 真相源 | 迁移期以 `tasks.todos` 作为唯一权威快照；独立 `todos` 表只做未来事件投影与查询优化，不参与当前写入真相源 |
+| todos 真相源 | 迁移期以 `tasks.todos` 作为唯一权威快照；独立 `todos` 表承接 `agent.todo.update` 最新快照投影与查询优化，但不参与当前写入真相源 |
 | 审计真相源 | 任务动作审计落 PostgreSQL `task_audits`，同时保留应用日志镜像便于排障 |
 | 模型变更历史 | `/api/model-change-log` 优先投影 `task_audits(action=config.set_model)`；legacy `data/model_change_log.json` 只作为迁移导入源 |
 | 晨报控制面 | `/api/morning-*` 优先投影 `task_audits(action=morning.*.snapshot)`；legacy `data/morning_*.json` 仅作为兼容 shadow 与采集脚本输入 |
@@ -25,7 +25,7 @@
 
 - legacy JSON 导入、ORM 读写、FastAPI 响应都必须遵守同一组字段语义。
 - 若输入载荷使用 `consult_log` / `scheduler` / `template_id` 等存储别名，服务层必须在入库前统一折叠为对外快照语义。
-- 在 `todos` 独立投影真正上线前，禁止再引入“同时写 `tasks.todos` 和 `todos` 表但不对账”的临时实现。
+- `todos` 表现在只承接事件投影，不得反向覆盖 `tasks.todos`；任何写路径仍必须先更新任务快照，再由事件异步投影。
 
 ## V2 事件契约
 
@@ -48,6 +48,7 @@
 - `meta.version` 必须与任务 `_stateVersion` 对齐，作为跨 topic 幂等边界。
 - `meta.source / request_id` 必须保留 control plane 与 actor 上下文，便于 durable audit 回溯。
 - Dispatcher 与 Orchestrator 都依赖 Redis Streams pending reclaim；worker 崩溃后通过 `XAUTOCLAIM` 认领未 ACK 事件继续执行。
+- `agent.thoughts -> thoughts` 与 `agent.todo.update -> todos(latest snapshot)` 均已启用投影；统一活动流查询由 `/api/events/activity/{task_id}` 与兼容 `/api/task-activity/{task_id}` 共同暴露。
 
 **文档概览图**
 
@@ -668,7 +669,7 @@ def get_task_activity(task_id):
     # 返回时标记数据来源
     return {
         'activity': activity,
-        'activitySource': 'progress+session',  # 新标记
+        'activitySource': 'snapshot+events+projections',  # 新标记
         # ... 其他字段 ...
     }
 ```
@@ -786,7 +787,9 @@ _scheduler = {
 
 #### 调度算法
 
-每 60 秒运行一次 `handle_scheduler_scan(threshold_sec=180)`：
+在 v2 运行时中，这一步由独立 `scheduler_worker` 周期执行，并通过 Redis leader lock 保证同一时刻只有一个调度实例真正扫描；legacy `curl /api/scheduler-scan` 仅保留为兼容/手工诊断入口。
+
+默认每 60 秒运行一次 `handle_scheduler_scan(threshold_sec=180)`：
 
 ```
 FOR EACH 任务:
@@ -926,13 +929,15 @@ T+720 (若仍未解决):
 }
 ```
 
-#### 任务活动流：`GET /api/task-activity/{task_id}`
+#### 任务活动流：`GET /api/task-activity/{task_id}` / `GET /api/events/activity/{task_id}`
 
 > 默认返回会对 `thinking`、`output`、绝对路径等敏感字段做脱敏；仅在显式设置 `EDICT_ACTIVITY_SENSITIVITY=full` 时返回完整细节。
 
 ```
 请求：
 GET /api/task-activity/JJC-20260228-E2E
+# 或
+GET /api/events/activity/JJC-20260228-E2E
 
 响应：
 {
@@ -1011,7 +1016,7 @@ GET /api/task-activity/JJC-20260228-E2E
     }
   ],
   
-  "activitySource": "progress+session",
+  "activitySource": "snapshot+events+projections",
   "relatedAgents": ["sili", "zhongshu", "menxia"],
   "phaseDurations": [
     {

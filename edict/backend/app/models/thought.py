@@ -1,7 +1,7 @@
 """Thought 模型 — Agent 思考流持久化。
 
 遵循 Edict Architecture §4 Thought JSON Schema。
-支持 streaming partial thoughts 和 dashboard 实时展示。
+由 `agent.thoughts` 事件投影填充，支持 dashboard 实时展示。
 """
 
 import uuid

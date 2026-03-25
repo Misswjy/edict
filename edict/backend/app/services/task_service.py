@@ -59,6 +59,7 @@ from ..task_contract import (
     validate_transition,
 )
 from .event_bus import EventBus
+from .activity_service import build_task_activity_view
 
 log = logging.getLogger("edict.task_service")
 
@@ -565,53 +566,7 @@ class TaskService:
         return {"ok": True, "message": f"{count} 道旨意已归档", "count": count}
 
     async def get_task_activity(self, task_id: str) -> dict[str, Any]:
-        task = await self._get_task(task_id)
-        task_dict = task.to_dict()
-        activity = []
-        for entry in task_dict.get("flow_log", []):
-            activity.append(
-                {
-                    "kind": "flow",
-                    "at": entry.get("at"),
-                    "from": entry.get("from"),
-                    "to": entry.get("to"),
-                    "remark": entry.get("remark"),
-                }
-            )
-        for entry in task_dict.get("progress_log", []):
-            activity.append(
-                {
-                    "kind": "progress",
-                    "at": entry.get("at"),
-                    "agent": entry.get("agent"),
-                    "text": entry.get("text"),
-                }
-            )
-        for entry in task_dict.get("consultLog", []):
-            activity.append(
-                {
-                    "kind": "consult",
-                    "at": entry.get("at"),
-                    "from": entry.get("from"),
-                    "to": entry.get("to"),
-                    "remark": entry.get("note"),
-                    "agent": entry.get("to"),
-                }
-            )
-        activity.sort(key=lambda item: str(item.get("at") or ""))
-        related_agents = sorted(
-            {
-                *(entry.get("agent") for entry in task_dict.get("progress_log", []) if entry.get("agent")),
-                *(entry.get("to") for entry in task_dict.get("consultLog", []) if entry.get("to")),
-            }
-        )
-        return {
-            "ok": True,
-            "taskId": task_id,
-            "activity": activity,
-            "relatedAgents": related_agents,
-            "lastActive": task_dict.get("updatedAt"),
-        }
+        return await build_task_activity_view(self.db, task_id)
 
     async def get_queue_metrics(self) -> dict[str, Any]:
         tasks = await self.list_tasks(limit=500)

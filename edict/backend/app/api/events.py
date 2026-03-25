@@ -1,17 +1,17 @@
 """Events API — 事件查询与审计。"""
 
 import logging
-from datetime import datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Depends
 
 from ..db import get_db
 from ..event_contract import EVENT_TOPIC_SCHEMAS
 from ..models.event import Event
 from ..services.event_bus import get_event_bus
+from ..services.activity_service import build_task_activity_view
 
 log = logging.getLogger("edict.api.events")
 router = APIRouter()
@@ -81,3 +81,12 @@ async def list_topics():
             for topic, schema in EVENT_TOPIC_SCHEMAS.items()
         ]
     }
+
+
+@router.get("/activity/{task_id}")
+async def task_activity_view(task_id: str, db: AsyncSession = Depends(get_db)):
+    """统一活动流查询视图（快照 + 事件 + thoughts/todos 投影）。"""
+    try:
+        return await build_task_activity_view(db, task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

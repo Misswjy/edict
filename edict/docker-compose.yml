@@ -103,6 +103,25 @@ services:
     command: python -m app.workers.dispatch_worker
     restart: unless-stopped
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: edict/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edict:edict_dev_2024@postgres:5432/edict
+      REDIS_URL: redis://redis:6379/0
+      SCHEDULER_SCAN_INTERVAL_SECONDS: 60
+      STALL_THRESHOLD_SEC: 180
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    command: python -m app.workers.scheduler_worker
+    restart: unless-stopped
+
   # ── 前端 ──
 
   frontend:

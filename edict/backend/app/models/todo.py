@@ -3,7 +3,8 @@
 遵循 Edict Architecture §4 Todo JSON Schema。
 支持层级结构（parent_id）和 checkpoint 跟踪。
 当前迁移阶段由 ``tasks.todos`` 作为任务快照真相源；
-本表保留给后续事件投影与查询优化使用。
+本表承接 `agent.todo.update` 的最新快照投影，用于查询优化，
+但不参与当前写入真相源决策。
 """
 
 import uuid

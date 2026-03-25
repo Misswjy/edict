@@ -544,9 +544,9 @@
 
 #### P1-11. 补齐事件投影
 
-- [ ] 将 `agent.thoughts` 持久化到 `thoughts`
-- [ ] 明确 `agent.todo.update` 是否投影到独立表
-- [ ] 增加任务活动流的统一查询视图
+- [x] 将 `agent.thoughts` 持久化到 `thoughts` 已完成✅
+- [x] 明确 `agent.todo.update` 是否投影到独立表 已完成✅
+- [x] 增加任务活动流的统一查询视图 已完成✅
 
 涉及文件：
 
@@ -563,15 +563,23 @@
 
 - 如果只有 `events` 原始表，没有投影层，查询复杂度和前端负担会升高
 
+落地结果：
+
+- `edict/backend/app/services/event_bus.py` 已确认 `agent.thoughts -> thoughts` 持久化链路，并补充回归测试锁定投影行为
+- `agent.todo.update` 已明确为“`tasks.todos` 仍是真相源，`todos` 表承接最新快照投影”的策略；投影逻辑集中在 `edict/backend/app/services/activity_service.py`
+- 已新增统一活动流查询构建器，并同时接入 `GET /api/events/activity/{task_id}` 与兼容 `GET /api/task-activity/{task_id}`
+- 统一活动流会融合任务快照、持久化事件、`thoughts` 投影、`todos` 投影，返回 `taskMeta / activity / todosSummary / resourceSummary / phaseDurations`
+- 已验证 `87 passed`：覆盖 thoughts/todos 投影、统一活动流视图、legacy/v2 契约回归
+
 ---
 
 ### 11. 调度系统迁移
 
 #### P1-12. 将调度扫描从外部轮询改为后台 worker
 
-- [ ] 新增独立 `scheduler_worker`
-- [ ] 由 worker 按固定间隔运行停滞扫描，不再依赖 `curl /api/scheduler-scan`
-- [ ] 支持部署级单实例或分布式锁，避免多 scheduler 重复动作
+- [x] 新增独立 `scheduler_worker` 已完成✅
+- [x] 由 worker 按固定间隔运行停滞扫描，不再依赖 `curl /api/scheduler-scan` 已完成✅
+- [x] 支持部署级单实例或分布式锁，避免多 scheduler 重复动作 已完成✅
 
 涉及文件：
 
@@ -587,6 +595,14 @@
 风险点：
 
 - 若没有调度实例互斥控制，多副本部署时会重复触发恢复动作
+
+落地结果：
+
+- 已新增 `edict/backend/app/workers/scheduler_worker.py`，直接通过 `TaskService.scheduler_scan()` 执行后台停滞扫描，不再依赖 HTTP 自调用
+- `scheduler_worker` 使用 Redis leader lock（`edict:scheduler:leader`）实现部署级单实例互斥，并支持同实例续租/停止时释放锁
+- `edict/docker-compose.yml` 已新增 `scheduler` 服务，v2 compose 启动后会自动带起调度 worker
+- `scripts/run_loop.sh` 保留 legacy 兼容，但新增 `EDICT_DISABLE_HTTP_SCHEDULER_SCAN=1` 开关，避免混合运行时重复触发 `curl /api/scheduler-scan`
+- 已验证 `90 passed`：覆盖 scheduler worker 抢锁、续租、跳过非 leader、停止释放锁，以及既有 legacy/v2 契约回归
 
 #### P1-13. 对齐 legacy 调度策略
 

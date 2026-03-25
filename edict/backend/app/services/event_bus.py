@@ -323,29 +323,41 @@ class EventBus:
         payload: dict[str, Any],
         meta: dict[str, Any],
     ) -> None:
-        if topic != TOPIC_AGENT_THOUGHTS:
-            return
-        content = str(payload.get("output") or payload.get("content") or "").strip()
-        if not content:
-            return
-        agent = str(payload.get("agent") or producer.replace("agent.", "")).strip()
-        async with self._session_factory() as session:
-            from ..models.thought import Thought
+        if topic == TOPIC_AGENT_THOUGHTS:
+            content = str(payload.get("output") or payload.get("content") or "").strip()
+            if not content:
+                return
+            agent = str(payload.get("agent") or producer.replace("agent.", "")).strip()
+            async with self._session_factory() as session:
+                from ..models.thought import Thought
 
-            session.add(
-                Thought(
-                    trace_id=trace_id,
-                    agent=agent or "unknown",
-                    step=int(meta.get("step") or 0),
-                    type=str(payload.get("type") or "summary"),
-                    source=str(payload.get("source") or "tool"),
-                    content=content,
-                    tokens=int(payload.get("tokens") or 0),
-                    confidence=float(payload.get("confidence") or 0.0),
-                    sensitive=bool(payload.get("sensitive") or False),
+                session.add(
+                    Thought(
+                        trace_id=trace_id,
+                        agent=agent or "unknown",
+                        step=int(meta.get("step") or 0),
+                        type=str(payload.get("type") or "summary"),
+                        source=str(payload.get("source") or "tool"),
+                        content=content,
+                        tokens=int(payload.get("tokens") or 0),
+                        confidence=float(payload.get("confidence") or 0.0),
+                        sensitive=bool(payload.get("sensitive") or False),
+                    )
                 )
-            )
-            await session.commit()
+                await session.commit()
+            return
+
+        if topic == TOPIC_AGENT_TODO_UPDATE:
+            from .activity_service import project_todos_snapshot
+
+            async with self._session_factory() as session:
+                await project_todos_snapshot(
+                    session,
+                    trace_id=trace_id,
+                    items=list(payload.get("items") or []),
+                    producer=producer,
+                    source_of_truth=str(payload.get("source_of_truth") or "tasks.todos"),
+                )
 
     def _session_factory(self):
         factory = self._session_factory_override
