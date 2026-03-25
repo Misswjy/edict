@@ -8,9 +8,13 @@ import threading
 import time
 from http.client import HTTPConnection
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'dashboard'))
 sys.path.insert(0, str(ROOT / 'scripts'))
+
+from file_lock import LegacyWriteFrozenError
 
 
 def _configure_server(tmp_path, monkeypatch):
@@ -121,6 +125,38 @@ def test_legacy_freeze_marker_still_allows_get_reads(tmp_path, monkeypatch):
     assert body['tasks'][0]['id'] == 'JJC-READ-001'
 
     httpd.server_close()
+
+
+def test_legacy_freeze_marker_blocks_internal_atomic_updates(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    freeze_marker = tmp_path / 'ops' / 'cutover' / '.legacy_write_frozen'
+    freeze_marker.parent.mkdir(parents=True)
+    freeze_marker.write_text('', encoding='utf-8')
+    monkeypatch.setenv('EDICT_LEGACY_WRITE_FREEZE_MARKER', str(freeze_marker))
+
+    (data_dir / 'tasks_source.json').write_text(json.dumps([{'id': 'JJC-LOCK-001', 'title': '保留原样'}]), encoding='utf-8')
+
+    with pytest.raises(LegacyWriteFrozenError):
+        srv._atomic_update_tasks(
+            lambda tasks: tasks + [{'id': 'JJC-LOCK-002', 'title': '不应写入'}],
+            trigger_refresh=False,
+        )
+
+    assert _read_tasks(data_dir) == [{'id': 'JJC-LOCK-001', 'title': '保留原样'}]
+
+
+def test_legacy_freeze_marker_blocks_internal_handle_create_task(tmp_path, monkeypatch):
+    srv, data_dir = _configure_server(tmp_path, monkeypatch)
+    freeze_marker = tmp_path / 'ops' / 'cutover' / '.legacy_write_frozen'
+    freeze_marker.parent.mkdir(parents=True)
+    freeze_marker.write_text('', encoding='utf-8')
+    monkeypatch.setenv('EDICT_LEGACY_WRITE_FREEZE_MARKER', str(freeze_marker))
+
+    with pytest.raises(LegacyWriteFrozenError):
+        srv.handle_create_task('只读期间内部创建也应失败', actor=srv.make_actor_context('emperor', source='test'))
+
+    assert _read_tasks(data_dir) == []
+    assert _read_audit(data_dir) == []
 
 
 def test_court_discuss_session_persists_across_reload(tmp_path, monkeypatch):

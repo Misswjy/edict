@@ -5,7 +5,12 @@ import time
 import datetime
 import traceback
 import logging
-from file_lock import atomic_json_write, atomic_json_read
+from file_lock import (
+    atomic_json_write,
+    atomic_json_read,
+    legacy_tasks_write_blocked,
+    legacy_write_freeze_marker_path,
+)
 
 log = logging.getLogger('sync_runtime')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -208,6 +213,27 @@ def main():
     start = time.time()
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     now_ms = int(time.time() * 1000)
+    tasks_path = DATA / 'tasks_source.json'
+
+    if legacy_tasks_write_blocked(tasks_path):
+        duration_ms = int((time.time() - start) * 1000)
+        marker = legacy_write_freeze_marker_path()
+        write_status(
+            ok=True,
+            skipped=True,
+            readOnly=True,
+            lastSyncAt=now,
+            durationMs=duration_ms,
+            source='openclaw_runtime_sessions',
+            recordCount=0,
+            scannedSessionFiles=0,
+            missingFields={},
+            error=None,
+            freezeMarker=str(marker),
+            note='legacy runtime is read-only during v2 cutover',
+        )
+        log.info(f'skip runtime sync: legacy write freeze active ({marker})')
+        return
 
     try:
         tasks = []
@@ -305,7 +331,7 @@ def main():
         # ── 保留已有的 JJC-* 旨意任务（不覆盖皇上下旨记录）──
         # JJC 任务的 now 字段由 Agent 自己通过 kanban_update.py progress 命令主动上报，
         # 不再从会话日志中被动抓取。这里只做合并，不做 activity 映射。
-        existing_tasks_file = DATA / 'tasks_source.json'
+        existing_tasks_file = tasks_path
         if existing_tasks_file.exists():
             try:
                 existing = json.loads(existing_tasks_file.read_text())
@@ -318,7 +344,7 @@ def main():
                 log.error(f'merge existing JJC tasks failed: {e}')
                 pass
 
-        atomic_json_write(DATA / 'tasks_source.json', tasks)
+        atomic_json_write(tasks_path, tasks)
 
         duration_ms = int((time.time() - start) * 1000)
         write_status(

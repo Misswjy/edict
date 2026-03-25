@@ -1,11 +1,14 @@
 """tests for scripts/kanban_update.py"""
 import json, pathlib, sys, threading
 
+import pytest
+
 # Ensure scripts/ is importable
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
 import kanban_update as kb
+from file_lock import LegacyWriteFrozenError
 
 
 def test_create_and_get(tmp_path):
@@ -244,5 +247,33 @@ def test_kanban_concurrent_progress_and_todo(tmp_path):
         assert t['now'] == '并发进展上报'
         assert t['todos'][0]['title'] == '并发 todo'
         assert len(t.get('progress_log', [])) == 1
+    finally:
+        kb.TASKS_FILE = original
+
+
+def test_kanban_write_commands_respect_freeze_marker(tmp_path, monkeypatch):
+    tasks_file = tmp_path / 'tasks_source.json'
+    original_tasks = [
+        {'id': 'T-LOCK', 'title': '冻结保护', 'state': 'Assigned', 'org': '尚书省', 'targetDept': '工部'}
+    ]
+    tasks_file.write_text(json.dumps(original_tasks, ensure_ascii=False))
+
+    freeze_marker = tmp_path / 'ops' / 'cutover' / '.legacy_write_frozen'
+    freeze_marker.parent.mkdir(parents=True, exist_ok=True)
+    freeze_marker.write_text('', encoding='utf-8')
+    monkeypatch.setenv('EDICT_LEGACY_WRITE_FREEZE_MARKER', str(freeze_marker))
+
+    original = kb.TASKS_FILE
+    kb.TASKS_FILE = tasks_file
+    try:
+        with pytest.raises(LegacyWriteFrozenError):
+            kb.cmd_create('T-NEW', '只读期间不应创建', 'Sili', '司礼监', '中书令')
+        with pytest.raises(LegacyWriteFrozenError):
+            kb.cmd_state('T-LOCK', 'Doing')
+        with pytest.raises(LegacyWriteFrozenError):
+            kb.cmd_progress('T-LOCK', '只读期间不应写进展')
+
+        assert json.loads(tasks_file.read_text()) == original_tasks
+        assert kb.load()[0]['id'] == 'T-LOCK'
     finally:
         kb.TASKS_FILE = original

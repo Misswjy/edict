@@ -871,7 +871,7 @@
 #### P3-1. legacy 先只读，再删除
 
 - [x] 已完成✅ `dashboard/server.py` 已接入 `ops/cutover/.legacy_write_frozen` 写保护；Stage 5 期间 legacy HTTP 写请求会返回只读错误，并由 `tests/test_server.py` 覆盖 GET/POST 回归
-- [ ] 停止所有运行时对 `tasks_source.json` 的写入
+- [x] 已完成✅ `scripts/file_lock.py` 已对 `tasks_source.json` 底层原子写统一接入 freeze guard，`save_tasks()` / `_atomic_update_tasks()` / `kanban_update.py` / `sync_from_openclaw_runtime.py` 均会在 Stage 5 停止落盘；`scripts/run_loop.sh` 也会跳过 legacy runtime sync 与 scheduler-scan
 - [ ] 删除或下线 `edict/backend/app/api/legacy.py`
 - [ ] 停止 `scripts/run_loop.sh` 和 JSON 轮询刷新
 

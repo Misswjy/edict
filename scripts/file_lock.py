@@ -20,9 +20,36 @@ import pathlib
 import tempfile
 from typing import Any, Callable
 
+BASE = pathlib.Path(__file__).resolve().parent.parent
+LEGACY_WRITE_FREEZE_MARKER = BASE / 'ops' / 'cutover' / '.legacy_write_frozen'
+
+
+class LegacyWriteFrozenError(RuntimeError):
+    """Raised when legacy task writes are blocked during v2 cutover."""
+
+    def __init__(self, path: pathlib.Path, marker: pathlib.Path):
+        self.path = pathlib.Path(path)
+        self.freeze_marker = pathlib.Path(marker)
+        super().__init__('legacy runtime is read-only during v2 cutover')
+
 
 def _lock_path(path: pathlib.Path) -> pathlib.Path:
     return path.parent / (path.name + '.lock')
+
+
+def legacy_write_freeze_marker_path() -> pathlib.Path:
+    raw = (os.environ.get('EDICT_LEGACY_WRITE_FREEZE_MARKER') or '').strip()
+    return pathlib.Path(raw).expanduser() if raw else LEGACY_WRITE_FREEZE_MARKER
+
+
+def legacy_tasks_write_blocked(path: pathlib.Path) -> bool:
+    return pathlib.Path(path).name == 'tasks_source.json' and legacy_write_freeze_marker_path().exists()
+
+
+def assert_legacy_tasks_writable(path: pathlib.Path) -> None:
+    marker = legacy_write_freeze_marker_path()
+    if pathlib.Path(path).name == 'tasks_source.json' and marker.exists():
+        raise LegacyWriteFrozenError(pathlib.Path(path), marker)
 
 
 def atomic_json_read(path: pathlib.Path, default: Any = None) -> Any:
@@ -56,6 +83,7 @@ def atomic_json_update(
     fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
+        assert_legacy_tasks_writable(path)
         # Read
         try:
             data = json.loads(path.read_text()) if path.exists() else default
@@ -89,6 +117,7 @@ def atomic_json_write(path: pathlib.Path, data: Any) -> None:
     fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
+        assert_legacy_tasks_writable(path)
         tmp_fd, tmp_path = tempfile.mkstemp(
             dir=str(path.parent), suffix='.tmp', prefix=path.stem + '_'
         )

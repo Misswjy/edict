@@ -1,10 +1,12 @@
 """tests for scripts/file_lock.py"""
 import json, pathlib, tempfile, os, sys, multiprocessing
 
+import pytest
+
 # Ensure scripts/ is importable
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'scripts'))
 
-from file_lock import atomic_json_read, atomic_json_write, atomic_json_update
+from file_lock import LegacyWriteFrozenError, atomic_json_read, atomic_json_write, atomic_json_update
 
 
 def test_write_and_read(tmp_path):
@@ -87,3 +89,20 @@ def test_file_lock_multiprocess_atomic_update(tmp_path):
         assert proc.exitcode == 0
 
     assert atomic_json_read(p, {})['count'] == 4
+
+
+def test_tasks_source_write_blocked_when_freeze_marker_exists(tmp_path, monkeypatch):
+    marker = tmp_path / 'ops' / 'cutover' / '.legacy_write_frozen'
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text('', encoding='utf-8')
+    monkeypatch.setenv('EDICT_LEGACY_WRITE_FREEZE_MARKER', str(marker))
+
+    tasks_path = tmp_path / 'tasks_source.json'
+
+    with pytest.raises(LegacyWriteFrozenError):
+        atomic_json_write(tasks_path, [])
+
+    with pytest.raises(LegacyWriteFrozenError):
+        atomic_json_update(tasks_path, lambda rows: rows, [])
+
+    assert not tasks_path.exists()

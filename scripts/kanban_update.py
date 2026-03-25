@@ -42,7 +42,7 @@ log = logging.getLogger('kanban')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
 # 文件锁 —— 防止多 Agent 同时读写 tasks_source.json
-from file_lock import atomic_json_read, atomic_json_update  # noqa: E402
+from file_lock import LegacyWriteFrozenError, atomic_json_read, atomic_json_update  # noqa: E402
 from utils import now_iso  # noqa: E402
 from app.task_contract import (  # noqa: E402
     TERMINAL_STATES,
@@ -629,55 +629,62 @@ if __name__ == '__main__':
         print(f'错误："{cmd}" 命令至少需要 {_CMD_MIN_ARGS[cmd]} 个参数，实际 {len(args)} 个')
         print(__doc__)
         sys.exit(1)
-    if cmd == 'create':
-        cmd_create(args[1], args[2], args[3], args[4], args[5], args[6] if len(args)>6 else None)
-    elif cmd == 'state':
-        cmd_state(args[1], args[2], args[3] if len(args)>3 else None)
-    elif cmd == 'flow':
-        cmd_flow(args[1], args[2], args[3], args[4])
-    elif cmd == 'done':
-        cmd_done(args[1], args[2] if len(args)>2 else '', args[3] if len(args)>3 else '')
-    elif cmd == 'block':
-        cmd_block(args[1], args[2])
-    elif cmd == 'todo':
-        # 解析可选 --detail 参数
-        todo_pos = []
-        todo_detail = ''
-        ti = 1
-        while ti < len(args):
-            if args[ti] == '--detail' and ti + 1 < len(args):
-                todo_detail = args[ti + 1]; ti += 2
-            else:
-                todo_pos.append(args[ti]); ti += 1
-        cmd_todo(
-            todo_pos[0] if len(todo_pos) > 0 else '',
-            todo_pos[1] if len(todo_pos) > 1 else '',
-            todo_pos[2] if len(todo_pos) > 2 else '',
-            todo_pos[3] if len(todo_pos) > 3 else 'not-started',
-            detail=todo_detail,
+    try:
+        if cmd == 'create':
+            cmd_create(args[1], args[2], args[3], args[4], args[5], args[6] if len(args)>6 else None)
+        elif cmd == 'state':
+            cmd_state(args[1], args[2], args[3] if len(args)>3 else None)
+        elif cmd == 'flow':
+            cmd_flow(args[1], args[2], args[3], args[4])
+        elif cmd == 'done':
+            cmd_done(args[1], args[2] if len(args)>2 else '', args[3] if len(args)>3 else '')
+        elif cmd == 'block':
+            cmd_block(args[1], args[2])
+        elif cmd == 'todo':
+            # 解析可选 --detail 参数
+            todo_pos = []
+            todo_detail = ''
+            ti = 1
+            while ti < len(args):
+                if args[ti] == '--detail' and ti + 1 < len(args):
+                    todo_detail = args[ti + 1]; ti += 2
+                else:
+                    todo_pos.append(args[ti]); ti += 1
+            cmd_todo(
+                todo_pos[0] if len(todo_pos) > 0 else '',
+                todo_pos[1] if len(todo_pos) > 1 else '',
+                todo_pos[2] if len(todo_pos) > 2 else '',
+                todo_pos[3] if len(todo_pos) > 3 else 'not-started',
+                detail=todo_detail,
+            )
+        elif cmd == 'progress':
+            # 解析可选 --tokens/--cost/--elapsed 参数
+            pos_args = []
+            kw = {}
+            i = 1
+            while i < len(args):
+                if args[i] == '--tokens' and i + 1 < len(args):
+                    kw['tokens'] = args[i + 1]; i += 2
+                elif args[i] == '--cost' and i + 1 < len(args):
+                    kw['cost'] = args[i + 1]; i += 2
+                elif args[i] == '--elapsed' and i + 1 < len(args):
+                    kw['elapsed'] = args[i + 1]; i += 2
+                else:
+                    pos_args.append(args[i]); i += 1
+            cmd_progress(
+                pos_args[0] if len(pos_args) > 0 else '',
+                pos_args[1] if len(pos_args) > 1 else '',
+                pos_args[2] if len(pos_args) > 2 else '',
+                tokens=kw.get('tokens', 0),
+                cost=kw.get('cost', 0.0),
+                elapsed=kw.get('elapsed', 0),
+            )
+        else:
+            print(__doc__)
+            sys.exit(1)
+    except LegacyWriteFrozenError as exc:
+        print(
+            f'[看板] {exc} (freeze marker: {exc.freeze_marker})',
+            file=sys.stderr,
         )
-    elif cmd == 'progress':
-        # 解析可选 --tokens/--cost/--elapsed 参数
-        pos_args = []
-        kw = {}
-        i = 1
-        while i < len(args):
-            if args[i] == '--tokens' and i + 1 < len(args):
-                kw['tokens'] = args[i + 1]; i += 2
-            elif args[i] == '--cost' and i + 1 < len(args):
-                kw['cost'] = args[i + 1]; i += 2
-            elif args[i] == '--elapsed' and i + 1 < len(args):
-                kw['elapsed'] = args[i + 1]; i += 2
-            else:
-                pos_args.append(args[i]); i += 1
-        cmd_progress(
-            pos_args[0] if len(pos_args) > 0 else '',
-            pos_args[1] if len(pos_args) > 1 else '',
-            pos_args[2] if len(pos_args) > 2 else '',
-            tokens=kw.get('tokens', 0),
-            cost=kw.get('cost', 0.0),
-            elapsed=kw.get('elapsed', 0),
-        )
-    else:
-        print(__doc__)
-        sys.exit(1)
+        sys.exit(2)

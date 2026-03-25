@@ -11,6 +11,7 @@ INTERVAL="${1:-15}"
 LOG="/tmp/sansheng_liubu_refresh.log"
 PIDFILE="/tmp/sansheng_liubu_refresh.pid"
 MAX_LOG_SIZE=$((10 * 1024 * 1024))  # 10MB
+FREEZE_MARKER="${EDICT_LEGACY_WRITE_FREEZE_MARKER:-$SCRIPT_DIR/../ops/cutover/.legacy_write_frozen}"
 
 # ── 单实例保护 ──
 if [[ -f "$PIDFILE" ]]; then
@@ -50,6 +51,7 @@ echo "   间隔: ${INTERVAL}s"
 echo "   巡检间隔: ${SCAN_INTERVAL}s"
 echo "   HTTP 调度巡检: $([[ \"$DISABLE_HTTP_SCHEDULER_SCAN\" == \"1\" ]] && echo '关闭（由 v2 scheduler worker 接管）' || echo '开启')"
 echo "   脚本超时: ${SCRIPT_TIMEOUT}s"
+echo "   Legacy 写冻结标记: $FREEZE_MARKER"
 echo "   日志: $LOG"
 echo "   PID文件: $PIDFILE"
 echo "   按 Ctrl+C 停止"
@@ -71,7 +73,11 @@ safe_run() {
 
 while true; do
   rotate_log
-  safe_run "$SCRIPT_DIR/sync_from_openclaw_runtime.py"
+  if [[ -f "$FREEZE_MARKER" ]]; then
+    echo "$(date '+%H:%M:%S') [loop] ℹ️ legacy write freeze active，跳过 sync_from_openclaw_runtime.py" >> "$LOG"
+  else
+    safe_run "$SCRIPT_DIR/sync_from_openclaw_runtime.py"
+  fi
   safe_run "$SCRIPT_DIR/sync_agent_config.py"
   safe_run "$SCRIPT_DIR/apply_model_changes.py"
   safe_run "$SCRIPT_DIR/sync_officials_stats.py"
@@ -83,6 +89,8 @@ while true; do
     SCAN_COUNTER=0
     if [[ "$DISABLE_HTTP_SCHEDULER_SCAN" == "1" ]]; then
       echo "$(date '+%H:%M:%S') [loop] ℹ️ 已禁用 HTTP scheduler-scan，交由 v2 scheduler worker 负责" >> "$LOG"
+    elif [[ -f "$FREEZE_MARKER" ]]; then
+      echo "$(date '+%H:%M:%S') [loop] ℹ️ legacy write freeze active，跳过 legacy scheduler-scan" >> "$LOG"
     else
       curl -s -X POST http://127.0.0.1:7891/api/scheduler-scan \
         -H 'Content-Type: application/json' -d '{"thresholdSec":180}' >> "$LOG" 2>&1 || true
