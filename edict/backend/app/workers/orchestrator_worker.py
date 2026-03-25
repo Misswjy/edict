@@ -15,7 +15,9 @@
 import asyncio
 import logging
 import signal
+import uuid
 
+from ..config import get_settings
 from ..task_contract import TaskState, build_dispatch_key, make_actor_context, resolve_dispatch_agent
 from ..services.admin_action_service import AdminActionService
 from ..services.event_bus import (
@@ -47,13 +49,19 @@ class OrchestratorWorker:
     """事件驱动的编排器 Worker。"""
 
     def __init__(self):
+        settings = get_settings()
         self.bus = EventBus()
         self.admin_actions = AdminActionService()
         self._running = False
+        self.worker_name = "orchestrator"
+        self.instance_id = f"orch-{uuid.uuid4().hex[:8]}"
+        heartbeat_interval = max(10, int(getattr(settings, "heartbeat_interval_sec", 30) or 30))
+        self.heartbeat_ttl_sec = max(60, heartbeat_interval * 4)
 
     async def start(self):
         """启动 worker 主循环。"""
         await self.bus.connect()
+        await self._heartbeat(status="starting")
 
         # 确保所有消费者组
         for topic in WATCHED_TOPICS:
@@ -64,9 +72,11 @@ class OrchestratorWorker:
 
         # 先处理崩溃遗留的 pending 事件
         await self._recover_pending()
+        await self._heartbeat(status="running")
 
         while self._running:
             try:
+                await self._heartbeat(status="running")
                 await self._poll_cycle()
             except Exception as e:
                 log.error(f"Orchestrator poll error: {e}", exc_info=True)
@@ -74,8 +84,24 @@ class OrchestratorWorker:
 
     async def stop(self):
         self._running = False
+        await self._heartbeat(status="stopping", ttl_sec=30)
         await self.bus.close()
         log.info("Orchestrator worker stopped")
+
+    async def _heartbeat(self, *, status: str, ttl_sec: int | None = None):
+        reporter = getattr(self.bus, "report_worker_heartbeat", None)
+        if not callable(reporter):
+            return
+        try:
+            await reporter(
+                self.worker_name,
+                self.instance_id,
+                status=status,
+                ttl_sec=int(ttl_sec or self.heartbeat_ttl_sec),
+                extra={"group": GROUP, "topics": WATCHED_TOPICS},
+            )
+        except Exception:
+            log.debug("orchestrator heartbeat update skipped", exc_info=True)
 
     async def _recover_pending(self):
         """恢复崩溃前未 ACK 的事件。"""

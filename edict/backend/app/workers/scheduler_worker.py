@@ -28,13 +28,17 @@ class SchedulerWorker:
         settings = get_settings()
         self.bus = EventBus()
         self._running = False
+        self.worker_name = "scheduler"
         self.instance_id = f"scheduler-{uuid.uuid4().hex[:8]}"
         self.scan_interval_sec = max(5, int(scan_interval_sec or settings.scheduler_scan_interval_seconds or 60))
         self.threshold_sec = max(60, int(threshold_sec or settings.stall_threshold_sec or 180))
         self.lock_ttl_sec = max(self.scan_interval_sec * 3, int(lock_ttl_sec or 0), 30)
+        heartbeat_interval = max(10, int(getattr(settings, "heartbeat_interval_sec", 30) or 30))
+        self.heartbeat_ttl_sec = max(60, heartbeat_interval * 4)
 
     async def start(self):
         await self.bus.connect()
+        await self._heartbeat(status="starting")
         self._running = True
         log.info(
             "🧭 Scheduler worker started instance=%s interval=%ss threshold=%ss lock_ttl=%ss",
@@ -52,6 +56,7 @@ class SchedulerWorker:
 
     async def stop(self):
         self._running = False
+        await self._heartbeat(status="stopping", ttl_sec=30)
         try:
             current_owner = await self.bus.redis.get(LOCK_KEY)
             if current_owner == self.instance_id:
@@ -63,9 +68,11 @@ class SchedulerWorker:
 
     async def _run_cycle(self):
         if not await self._acquire_or_renew_leader_lock():
+            await self._heartbeat(status="standby", leader=False)
             log.debug("scheduler leader lock held by another instance; skipping this cycle")
             await asyncio.sleep(self.scan_interval_sec)
             return
+        await self._heartbeat(status="running", leader=True)
         result = await self._scan_tasks()
         log.info(
             "🧭 Scheduler scan complete instance=%s actions=%s threshold=%s",
@@ -74,6 +81,28 @@ class SchedulerWorker:
             int(result.get("thresholdSec") or self.threshold_sec),
         )
         await asyncio.sleep(self.scan_interval_sec)
+
+    async def _heartbeat(self, *, status: str, ttl_sec: int | None = None, leader: bool | None = None):
+        reporter = getattr(self.bus, "report_worker_heartbeat", None)
+        if not callable(reporter):
+            return
+        extra = {
+            "lock_key": LOCK_KEY,
+            "scan_interval_sec": self.scan_interval_sec,
+            "threshold_sec": self.threshold_sec,
+        }
+        if leader is not None:
+            extra["leader"] = bool(leader)
+        try:
+            await reporter(
+                self.worker_name,
+                self.instance_id,
+                status=status,
+                ttl_sec=int(ttl_sec or self.heartbeat_ttl_sec),
+                extra=extra,
+            )
+        except Exception:
+            log.debug("scheduler heartbeat update skipped", exc_info=True)
 
     async def _acquire_or_renew_leader_lock(self) -> bool:
         current_owner = await self.bus.redis.get(LOCK_KEY)

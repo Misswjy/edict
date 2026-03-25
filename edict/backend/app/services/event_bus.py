@@ -37,6 +37,8 @@ log = logging.getLogger("edict.event_bus")
 # 所有 topic 对应的 Redis Stream key 前缀
 STREAM_PREFIX = "edict:stream:"
 DISPATCH_EXEC_PREFIX = "edict:dispatch:execution:"
+WORKER_HEARTBEAT_PREFIX = "edict:worker:heartbeat:"
+WORKER_HEARTBEAT_REGISTRY_KEY = "edict:worker:registry"
 
 
 class EventBus:
@@ -78,6 +80,9 @@ class EventBus:
 
     def _dispatch_state_key(self, dispatch_key: str) -> str:
         return f"{DISPATCH_EXEC_PREFIX}{dispatch_key}"
+
+    def _worker_heartbeat_key(self, worker_name: str, instance_id: str) -> str:
+        return f"{WORKER_HEARTBEAT_PREFIX}{worker_name}:{instance_id}"
 
     async def publish(
         self,
@@ -207,6 +212,108 @@ class EventBus:
             return await self.redis.xinfo_stream(stream_key)
         except aioredis.ResponseError:
             return {}
+
+    async def stream_groups(self, topic: str) -> list[dict[str, Any]]:
+        """获取 Stream 的 consumer groups 信息。"""
+        stream_key = self._stream_key(topic)
+        try:
+            groups = await self.redis.xinfo_groups(stream_key)
+            return [dict(group or {}) for group in (groups or [])]
+        except aioredis.ResponseError:
+            return []
+
+    async def stream_consumers(self, topic: str, group: str) -> list[dict[str, Any]]:
+        """获取某个 consumer group 的 consumers 信息。"""
+        stream_key = self._stream_key(topic)
+        try:
+            consumers = await self.redis.xinfo_consumers(stream_key, group)
+            return [dict(item or {}) for item in (consumers or [])]
+        except aioredis.ResponseError:
+            return []
+
+    async def pending_summary(self, topic: str, group: str) -> dict[str, Any]:
+        """获取 pending 摘要（总数、最旧/最新 entry、按 consumer 分布）。"""
+        stream_key = self._stream_key(topic)
+        try:
+            raw = await self.redis.execute_command("XPENDING", stream_key, group)
+        except aioredis.ResponseError:
+            return {"count": 0, "min_id": "", "max_id": "", "consumers": []}
+
+        if not isinstance(raw, (list, tuple)) or len(raw) < 4:
+            return {"count": 0, "min_id": "", "max_id": "", "consumers": []}
+
+        consumers: list[dict[str, Any]] = []
+        for item in raw[3] or []:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            consumers.append(
+                {
+                    "name": str(item[0]),
+                    "pending": int(item[1] or 0),
+                }
+            )
+
+        return {
+            "count": int(raw[0] or 0),
+            "min_id": str(raw[1] or ""),
+            "max_id": str(raw[2] or ""),
+            "consumers": consumers,
+        }
+
+    async def report_worker_heartbeat(
+        self,
+        worker_name: str,
+        instance_id: str,
+        *,
+        status: str = "running",
+        extra: dict[str, Any] | None = None,
+        ttl_sec: int = 120,
+    ) -> dict[str, Any]:
+        """写入 worker 心跳（Redis key + registry set）。"""
+        key = self._worker_heartbeat_key(worker_name, instance_id)
+        payload = {
+            "worker": worker_name,
+            "instance_id": instance_id,
+            "status": status,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "extra": dict(extra or {}),
+        }
+        await self.redis.set(key, json.dumps(payload, ensure_ascii=False), ex=max(10, int(ttl_sec or 120)))
+        await self.redis.sadd(WORKER_HEARTBEAT_REGISTRY_KEY, key)
+        await self.redis.expire(WORKER_HEARTBEAT_REGISTRY_KEY, max(300, int(ttl_sec or 120) * 4))
+        return payload
+
+    async def list_worker_heartbeats(self) -> list[dict[str, Any]]:
+        """读取当前已注册 worker 心跳。"""
+        keys = await self.redis.smembers(WORKER_HEARTBEAT_REGISTRY_KEY)
+        key_list = sorted(str(key) for key in (keys or []) if key)
+        if not key_list:
+            return []
+
+        payloads = await self.redis.mget(key_list)
+        rows: list[dict[str, Any]] = []
+        stale_keys: list[str] = []
+        for key, raw in zip(key_list, payloads):
+            if not raw:
+                stale_keys.append(key)
+                continue
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError:
+                stale_keys.append(key)
+                continue
+            if not isinstance(item, dict):
+                stale_keys.append(key)
+                continue
+            row = dict(item)
+            row["key"] = key
+            rows.append(row)
+
+        if stale_keys:
+            await self.redis.srem(WORKER_HEARTBEAT_REGISTRY_KEY, *stale_keys)
+
+        rows.sort(key=lambda r: (str(r.get("worker") or ""), str(r.get("instance_id") or "")))
+        return rows
 
     async def claim_dispatch_execution(self, dispatch_key: str, ttl_sec: int = 900) -> str:
         """对单轮派发做执行侧 claim，避免重复唤醒 Agent。"""

@@ -204,6 +204,65 @@ def test_orchestrator_wakes_agent_on_scheduler_escalated_event(monkeypatch):
     assert "原因: 停滞 600 秒" in calls[0]["message"]
 
 
+def test_orchestrator_reports_worker_heartbeat(monkeypatch):
+    _stub_backend_config(monkeypatch)
+    from edict.backend.app.workers.orchestrator_worker import OrchestratorWorker
+
+    heartbeats = []
+
+    class FakeBus:
+        async def report_worker_heartbeat(self, worker_name, instance_id, *, status="running", extra=None, ttl_sec=120):
+            heartbeats.append(
+                {
+                    "worker_name": worker_name,
+                    "instance_id": instance_id,
+                    "status": status,
+                    "extra": dict(extra or {}),
+                    "ttl_sec": ttl_sec,
+                }
+            )
+
+    worker = OrchestratorWorker()
+    worker.bus = FakeBus()
+
+    asyncio.run(worker._heartbeat(status="running"))
+
+    assert len(heartbeats) == 1
+    assert heartbeats[0]["worker_name"] == "orchestrator"
+    assert heartbeats[0]["status"] == "running"
+    assert "task.created" in heartbeats[0]["extra"]["topics"]
+
+
+def test_dispatch_worker_reports_active_dispatch_heartbeat(monkeypatch):
+    _stub_backend_config(monkeypatch)
+    from edict.backend.app.workers.dispatch_worker import DispatchWorker
+
+    heartbeats = []
+
+    class FakeBus:
+        async def report_worker_heartbeat(self, worker_name, instance_id, *, status="running", extra=None, ttl_sec=120):
+            heartbeats.append(
+                {
+                    "worker_name": worker_name,
+                    "instance_id": instance_id,
+                    "status": status,
+                    "extra": dict(extra or {}),
+                    "ttl_sec": ttl_sec,
+                }
+            )
+
+    worker = DispatchWorker()
+    worker.bus = FakeBus()
+
+    asyncio.run(worker._heartbeat(status="running", active_dispatches=2))
+
+    assert len(heartbeats) == 1
+    assert heartbeats[0]["worker_name"] == "dispatcher"
+    assert heartbeats[0]["status"] == "running"
+    assert heartbeats[0]["extra"]["active_dispatches"] == 2
+    assert heartbeats[0]["extra"]["group"] == "dispatcher"
+
+
 def test_task_service_create_task_retries_on_id_collision(monkeypatch):
     _stub_backend_config(monkeypatch)
     task_service_module, fake_integrity_error = _import_task_service_with_stubs(monkeypatch)

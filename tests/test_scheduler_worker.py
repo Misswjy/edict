@@ -59,9 +59,21 @@ class _FakeBus:
     def __init__(self):
         self.redis = _FakeRedis()
         self.closed = False
+        self.heartbeats = []
 
     async def close(self):
         self.closed = True
+
+    async def report_worker_heartbeat(self, worker_name, instance_id, *, status="running", extra=None, ttl_sec=120):
+        self.heartbeats.append(
+            {
+                "worker_name": worker_name,
+                "instance_id": instance_id,
+                "status": status,
+                "extra": dict(extra or {}),
+                "ttl_sec": ttl_sec,
+            }
+        )
 
 
 def test_scheduler_worker_acquires_and_renews_leader_lock(monkeypatch):
@@ -125,3 +137,18 @@ def test_scheduler_worker_runs_scan_and_releases_lock_on_stop(monkeypatch):
     asyncio.run(worker.stop())
     assert worker.bus.closed is True
     assert worker.bus.redis.deleted == [module.LOCK_KEY]
+
+
+def test_scheduler_worker_reports_heartbeat_payload(monkeypatch):
+    module = _import_scheduler_worker(monkeypatch)
+    worker = module.SchedulerWorker(scan_interval_sec=15, threshold_sec=180, lock_ttl_sec=45)
+    worker.bus = _FakeBus()
+
+    asyncio.run(worker._heartbeat(status="running", leader=True))
+
+    assert len(worker.bus.heartbeats) == 1
+    heartbeat = worker.bus.heartbeats[0]
+    assert heartbeat["worker_name"] == "scheduler"
+    assert heartbeat["status"] == "running"
+    assert heartbeat["extra"]["leader"] is True
+    assert heartbeat["extra"]["lock_key"] == module.LOCK_KEY

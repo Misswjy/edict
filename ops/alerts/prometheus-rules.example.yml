@@ -1,0 +1,64 @@
+groups:
+  - name: edict-migration-core
+    interval: 30s
+    rules:
+      - alert: EdictRedisPendingBacklogHigh
+        expr: sum(redis_stream_pending{stream=~"edict:stream:.*"}) > 200
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+        annotations:
+          summary: "Redis pending events backlog is high"
+          description: "Pending stream events exceed 200 for 5 minutes."
+
+      - alert: EdictRedisPendingBacklogCritical
+        expr: sum(redis_stream_pending{stream=~"edict:stream:.*"}) > 1000
+        for: 3m
+        labels:
+          severity: critical
+          component: redis
+        annotations:
+          summary: "Redis pending events backlog is critical"
+          description: "Pending stream events exceed 1000 for 3 minutes."
+
+      - alert: EdictWorkerHeartbeatLost
+        expr: max by (worker) (edict_worker_heartbeat_age_seconds{worker=~"orchestrator|dispatcher|scheduler"}) > 120
+        for: 2m
+        labels:
+          severity: critical
+          component: worker
+        annotations:
+          summary: "Worker heartbeat lost"
+          description: "Worker {{ $labels.worker }} has no heartbeat for >120s."
+
+      - alert: EdictCentralQueueBacklogSLA
+        expr: max(edict_queue_waiting{queue="shangshu"}) > 50
+        for: 10m
+        labels:
+          severity: warning
+          component: queue
+        annotations:
+          summary: "Central queue backlog exceeds SLA threshold"
+          description: "Shangshu waiting queue exceeds 50 for 10 minutes."
+
+      - alert: EdictSchedulerActionsBurst
+        expr: increase(edict_scheduler_actions_total{action=~"rollback|escalate"}[15m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+          component: scheduler
+        annotations:
+          summary: "Scheduler rollback/escalation burst detected"
+          description: "Rollback+escalation actions increased by >20 in 15 minutes."
+
+      - alert: EdictFrontendWebsocketDisconnectRateHigh
+        expr: rate(edict_frontend_ws_disconnect_total[5m]) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          component: frontend
+        annotations:
+          summary: "Frontend WebSocket disconnect rate is high"
+          description: "WebSocket disconnects exceed 0.2 events/sec for 10 minutes."
+

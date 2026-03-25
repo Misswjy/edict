@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import subprocess
+import uuid
 
 from ..config import get_settings
 from ..event_contract import (
@@ -37,22 +38,30 @@ class DispatchWorker:
     """Agent 派发 Worker — 调用 OpenClaw CLI 执行 agent 任务。"""
 
     def __init__(self, max_concurrent: int = 3):
+        settings = get_settings()
         self.bus = EventBus()
         self._running = False
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._active_tasks: dict[str, asyncio.Task] = {}
+        self.worker_name = "dispatcher"
+        self.instance_id = f"disp-{uuid.uuid4().hex[:8]}"
+        heartbeat_interval = max(10, int(getattr(settings, "heartbeat_interval_sec", 30) or 30))
+        self.heartbeat_ttl_sec = max(60, heartbeat_interval * 4)
 
     async def start(self):
         await self.bus.connect()
+        await self._heartbeat(status="starting")
         await self.bus.ensure_consumer_group(TOPIC_TASK_DISPATCH, GROUP)
         self._running = True
         log.info("🚀 Dispatch worker started")
 
         # 恢复崩溃遗留
         await self._recover_pending()
+        await self._heartbeat(status="running")
 
         while self._running:
             try:
+                await self._heartbeat(status="running", active_dispatches=len(self._active_tasks))
                 await self._poll_cycle()
             except Exception as e:
                 log.error(f"Dispatch poll error: {e}", exc_info=True)
@@ -60,12 +69,32 @@ class DispatchWorker:
 
     async def stop(self):
         self._running = False
+        await self._heartbeat(status="stopping", ttl_sec=30, active_dispatches=len(self._active_tasks))
         # 等待进行中的 agent 调用完成
         if self._active_tasks:
             log.info(f"Waiting for {len(self._active_tasks)} active dispatches...")
             await asyncio.gather(*self._active_tasks.values(), return_exceptions=True)
         await self.bus.close()
         log.info("Dispatch worker stopped")
+
+    async def _heartbeat(self, *, status: str, ttl_sec: int | None = None, active_dispatches: int = 0):
+        reporter = getattr(self.bus, "report_worker_heartbeat", None)
+        if not callable(reporter):
+            return
+        try:
+            await reporter(
+                self.worker_name,
+                self.instance_id,
+                status=status,
+                ttl_sec=int(ttl_sec or self.heartbeat_ttl_sec),
+                extra={
+                    "group": GROUP,
+                    "topic": TOPIC_TASK_DISPATCH,
+                    "active_dispatches": int(active_dispatches),
+                },
+            )
+        except Exception:
+            log.debug("dispatch heartbeat update skipped", exc_info=True)
 
     async def _recover_pending(self):
         events = await self.bus.claim_stale(
