@@ -73,6 +73,8 @@ class TaskService:
     async def create_task(
         self,
         title: str,
+        *,
+        task_id: str | None = None,
         official: str = "中书令",
         priority: str = "normal",
         lane: str = "standard",
@@ -86,35 +88,69 @@ class TaskService:
         now = datetime.now(timezone.utc).isoformat()
         task: Task | None = None
         last_error: IntegrityError | None = None
+        requested_task_id = str(task_id or "").strip()
 
-        for attempt in range(1, 6):
-            task_id = await self._next_task_id()
+        if requested_task_id:
+            existing = await self.db.get(Task, requested_task_id)
+            if existing:
+                raise ValueError(f"Task already exists: {requested_task_id}")
+
+        max_attempts = 1 if requested_task_id else 5
+        for attempt in range(1, max_attempts + 1):
+            next_task_id = requested_task_id or await self._next_task_id()
             scheduler = self._default_scheduler(updated_at=now)
+            task_payload = ensure_task_shape(
+                {
+                    "id": next_task_id,
+                    "title": title,
+                    "official": official,
+                    "state": initial_state.value,
+                    "now": self._initial_now_text(initial_state),
+                    "priority": priority,
+                    "lane": canonicalize_lane(lane),
+                    "templateId": template_id,
+                    "templateParams": template_params or {},
+                    "targetDept": target_dept or "",
+                    "_stateVersion": 1,
+                    "_scheduler": scheduler,
+                },
+                now=now,
+            )
+            task_payload["org"] = resolve_state_org(task_payload, initial_state.value) or task_payload.get("org") or "司礼监"
+            task_payload["flow_log"] = [
+                {
+                    "at": now,
+                    "from": "皇上",
+                    "to": task_payload["org"],
+                    "remark": f"下旨：{title}",
+                }
+            ]
+
             task = Task(
-                id=task_id,
-                title=title,
-                official=official,
-                org="司礼监",
+                id=task_payload["id"],
+                title=task_payload["title"],
+                official=task_payload["official"],
+                org=task_payload["org"],
                 state=initial_state,
-                now="等待司礼监接旨分办",
-                priority=priority,
-                lane=canonicalize_lane(lane),
-                template_id=template_id,
-                template_params=template_params or {},
-                target_dept=target_dept or "",
-                state_version=1,
-                flow_log=[
-                    {
-                        "at": now,
-                        "from": "皇上",
-                        "to": "司礼监",
-                        "remark": f"下旨：{title}",
-                    }
-                ],
-                progress_log=[],
-                consult_log=[],
-                todos=[],
-                scheduler=scheduler,
+                now=task_payload["now"],
+                eta=task_payload["eta"],
+                block=task_payload["block"],
+                output=task_payload["output"],
+                ac=task_payload["ac"],
+                priority=task_payload["priority"],
+                lane=task_payload["lane"],
+                review_round=int(task_payload["review_round"] or 0),
+                state_version=int(task_payload["_stateVersion"] or 1),
+                archived=bool(task_payload["archived"]),
+                flow_log=task_payload["flow_log"],
+                progress_log=task_payload["progress_log"],
+                consult_log=task_payload["consultLog"],
+                todos=task_payload["todos"],
+                scheduler=task_payload["_scheduler"],
+                template_id=task_payload["templateId"],
+                template_params=task_payload["templateParams"],
+                target_dept=task_payload["targetDept"],
+                prev_state=task_payload["_prev_state"],
             )
             self.db.add(task)
             try:
@@ -142,6 +178,22 @@ class TaskService:
         )
         await self._audit("task.create", actor, True, task_id=task.id, to_state=task.state.value, payload={"title": title})
         return task
+
+    def _initial_now_text(self, state: TaskState) -> str:
+        messages = {
+            TaskState.Pending: "待中书省受理",
+            TaskState.Sili: "等待司礼监接旨分办",
+            TaskState.Zhongshu: "已交中书省起草",
+            TaskState.Menxia: "已送门下省审议",
+            TaskState.Assigned: "已送尚书省待派发",
+            TaskState.Next: "已进入执行队列",
+            TaskState.Doing: "执行部门处理中",
+            TaskState.Review: "待尚书省审查",
+            TaskState.Done: "任务已完成",
+            TaskState.Blocked: "任务已阻塞",
+            TaskState.Cancelled: "任务已取消",
+        }
+        return messages.get(state, "等待司礼监接旨分办")
 
     async def transition_state(
         self,

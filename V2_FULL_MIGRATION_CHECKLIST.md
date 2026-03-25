@@ -772,6 +772,7 @@
 - `edict/migration/migrate_json_to_pg.py` 已与当前 `Task` ORM 对齐，`parse_old_task()` 会显式保留 `flow_log / progress_log / consultLog / _scheduler / archived / review_round`
 - dry-run 现已返回 `report + stats + reconciliation` bundle，并支持 `--report-file` 输出完整对账 JSON；正式导入仍保留重复主键跳过逻辑
 - sidecar 导入已统一写入 durable audit，便于后续核对导入量与跳过量
+- `court_discuss_sessions.json` 的 legacy `float` 时间戳已在迁移阶段归一为稳定 UTC 时间，避免 `task_audits.ts`、`audit_id` 与重复导入跳过因 rerun 漂移
 
 #### P2-2. 迁移非任务附属数据
 
@@ -872,7 +873,7 @@
 
 - [x] 已完成✅ `dashboard/server.py` 已接入 `ops/cutover/.legacy_write_frozen` 写保护；Stage 5 期间 legacy HTTP 写请求会返回只读错误，并由 `tests/test_server.py` 覆盖 GET/POST 回归
 - [x] 已完成✅ `scripts/file_lock.py` 已对 `tasks_source.json` 底层原子写统一接入 freeze guard，`save_tasks()` / `_atomic_update_tasks()` / `kanban_update.py` / `sync_from_openclaw_runtime.py` 均会在 Stage 5 停止落盘；`scripts/run_loop.sh` 也会跳过 legacy runtime sync 与 scheduler-scan
-- [ ] 删除或下线 `edict/backend/app/api/legacy.py`
+- [x] 已完成✅ `edict/backend/app/api/legacy.py` 已默认下线：`app.main` 仅在显式设置 `EDICT_ENABLE_LEGACY_TASK_ROUTES=1` 时才挂载兼容路由，`edict/scripts/kanban_update_edict.py` 也已改为直接使用标准 `/api/tasks/*` 路由
 - [ ] 停止 `scripts/run_loop.sh` 和 JSON 轮询刷新
 
 涉及文件：
@@ -900,9 +901,9 @@
 
 #### P3-2. 默认启动路径改为 v2
 
-- [ ] 默认 compose / dev 命令全部指向 `edict/docker-compose.yml`
-- [ ] 安装脚本与文档默认说明改为 v2
-- [ ] 如果保留 legacy demo，需明确标注“仅历史演示，不再作为主链路”
+- [x] 已完成✅ 默认 compose / dev 命令全部指向 `edict/docker-compose.yml`
+- [x] 已完成✅ 安装脚本与文档默认说明改为 v2
+- [x] 已完成✅ 如果保留 legacy demo，已明确标注“仅历史演示，不再作为主链路”
 
 涉及文件：
 
@@ -919,6 +920,12 @@
 风险点：
 
 - 文档不改，legacy 会被继续误用
+
+落地结果：
+
+- `README.md`、`README_EN.md`、`docs/getting-started.md` 的默认启动命令已统一切到 `docker compose -f edict/docker-compose.yml up --build`
+- `install.sh` 与 `install.ps1` 的安装后提示已默认指向 v2 前端 `:3000` 与 FastAPI `:8000/health`
+- 历史 Demo 与 legacy 启动方式已降级为回滚 / 演示说明，不再作为默认开发路径
 
 ## 17. 验收矩阵
 

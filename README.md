@@ -257,7 +257,16 @@ CrewAI 和 AutoGen 的 Agent 协作模式是 **"做完就交"**——没有人�
 ```bash
 docker run -p 7891:7891 cft0808/sansheng-demo
 ```
-打开 http://localhost:7891 即可体验军机处看板。
+打开 http://localhost:7891 即可体验历史 Demo 看板。
+
+> ⚠️ 该镜像与仓库根目录 `docker-compose.yml` 仅保留给历史演示，不再作为默认开发链路。
+> 默认本地开发 / 联调 / cutover 演练请使用：
+>
+> ```bash
+> docker compose -f edict/docker-compose.yml up --build
+> ```
+>
+> 前端默认地址为 `http://127.0.0.1:3000`，FastAPI 为 `http://127.0.0.1:8000`。
 
 <details>
 <summary><b>⚠️ 遇到 <code>exec format error</code>？（点击展开）</b></summary>
@@ -307,20 +316,17 @@ chmod +x install.sh && ./install.sh
 
 > ⚠️ **首次安装**：需先配置 API Key：`openclaw agents add sili`，然后重新运行 `./install.sh` 同步到所有 Agent。
 
-#### 启动
+#### 启动（默认 v2）
 
 ```bash
-# 终端 1：数据刷新循环
-bash scripts/run_loop.sh
-
-# 终端 2：看板服务器
-python3 dashboard/server.py
+docker compose -f edict/docker-compose.yml up --build
 
 # 打开浏览器
-open http://127.0.0.1:7891
+open http://127.0.0.1:3000
 ```
 
-> 💡 **看板即开即用**：`server.py` 内嵌 `dashboard/dashboard.html`，Docker 镜像包含预构建的 React 前端
+> 💡 **默认链路**：React 前端 + FastAPI + Postgres + Redis + orchestrator / dispatcher / scheduler worker。
+> legacy `bash scripts/run_loop.sh` + `python3 dashboard/server.py` 仅保留给回滚窗口和历史 Demo。
 
 > 💡 详细教程请看 [Getting Started 指南](docs/getting-started.md)
 

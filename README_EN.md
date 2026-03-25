@@ -213,15 +213,14 @@ The installer automatically:
 ### Launch
 
 ```bash
-# Terminal 1: Data sync loop (every 15s)
-bash scripts/run_loop.sh
-
-# Terminal 2: Dashboard server
-python3 dashboard/server.py
+docker compose -f edict/docker-compose.yml up --build
 
 # Open browser
-open http://127.0.0.1:7891
+open http://127.0.0.1:3000
 ```
+
+> Default dev path is now the v2 stack: React + FastAPI + Postgres + Redis + workers.
+> The legacy `run_loop.sh` + `dashboard/server.py` flow is kept only for rollback windows and historical demos.
 
 > 📖 See [Getting Started Guide](docs/getting-started.md) for detailed walkthrough.
 

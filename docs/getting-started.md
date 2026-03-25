@@ -57,20 +57,16 @@ openclaw channels add --type feishu --agent sili
 ## 第四步：启动服务
 
 ```bash
-# 终端 1：数据刷新循环（每 15 秒同步）
-bash scripts/run_loop.sh
-
-# 终端 2：看板服务器
-python3 dashboard/server.py
+# 默认 v2 启动方式
+docker compose -f edict/docker-compose.yml up --build
 
 # 打开浏览器
-open http://127.0.0.1:7891
+open http://127.0.0.1:3000
 ```
 
-> 💡 **提示**：`run_loop.sh` 每 15 秒自动同步数据。可用 `&` 后台运行。
-> 🔐 **默认安全值**：legacy 看板与 v2 backend 默认仅面向本机联调；若要远程暴露控制面，请显式配置 `EDICT_ADMIN_API_TOKEN`，并按需设置 `EDICT_ACTIVITY_SENSITIVITY=full` 与允许的 CORS 来源。
-
-> 💡 **看板即开即用**：`server.py` 内嵌 `dashboard/dashboard.html`，无需额外构建。Docker 镜像包含预构建的 React 前端。
+> 💡 **默认链路**：前端在 `http://127.0.0.1:3000`，FastAPI 在 `http://127.0.0.1:8000`，compose 会一并拉起 Postgres、Redis、orchestrator、dispatcher、scheduler。
+> 🔐 **默认安全值**：v2 backend 默认仅面向本机联调；若要远程暴露控制面，请显式配置 `EDICT_ADMIN_API_TOKEN`，并按需设置 `EDICT_ACTIVITY_SENSITIVITY=full` 与允许的 CORS 来源。
+> ⚠️ **legacy 入口**：`bash scripts/run_loop.sh` + `python3 dashboard/server.py` 仅保留给回滚窗口和历史 Demo，不再是默认开发路径。
 
 ## 第五步：发送第一道旨意
 
@@ -86,7 +82,7 @@ open http://127.0.0.1:7891
 
 ## 第六步：观察执行过程
 
-打开看板 http://127.0.0.1:7891
+打开看板 http://127.0.0.1:3000
 
 1. **📋 旨意看板** — 观察任务在各状态之间流转
 2. **🔭 省部调度** — 查看各部门工作分布
@@ -131,8 +127,8 @@ open http://127.0.0.1:7891
 
 ### 看板显示「服务器未启动」
 ```bash
-# 确认服务器正在运行
-python3 dashboard/server.py
+# 确认 v2 compose 正在运行
+docker compose -f edict/docker-compose.yml ps
 ```
 
 ### Agent 报错 "No API key found for provider"
@@ -168,11 +164,11 @@ openclaw gateway restart
 
 ### 数据不更新
 ```bash
-# 检查刷新循环是否运行
-ps aux | grep run_loop
+# 检查 backend / worker / redis / postgres 是否都已启动
+docker compose -f edict/docker-compose.yml ps
 
-# 手动执行一次同步
-python3 scripts/refresh_live_data.py
+# 查看 backend / worker 日志
+docker compose -f edict/docker-compose.yml logs backend dispatcher scheduler
 ```
 
 ### 心跳显示红色 / 告警

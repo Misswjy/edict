@@ -46,11 +46,13 @@ STATE_ORG_MAP = {
 
 # State → Edict TaskState value 映射
 _STATE_TO_EDICT = {
-    'Sili': 'sili', 'Zhongshu': 'zhongshu', 'Menxia': 'menxia',
-    'Assigned': 'assigned', 'Next': 'next', 'Doing': 'doing',
-    'Review': 'review', 'Done': 'done', 'Blocked': 'blocked',
-    'Cancelled': 'cancelled', 'Pending': 'pending',
+    'Sili': 'Sili', 'Zhongshu': 'Zhongshu', 'Menxia': 'Menxia',
+    'Assigned': 'Assigned', 'Next': 'Next', 'Doing': 'Doing',
+    'Review': 'Review', 'Done': 'Done', 'Blocked': 'Blocked',
+    'Cancelled': 'Cancelled', 'Pending': 'Pending',
 }
+
+_CENTRAL_ORGS = {'司礼监', '中书省', '门下省', '尚书省', '皇上', '执行中', '完成', '阻塞'}
 
 
 def _sanitize_text(raw, max_len=80):
@@ -157,6 +159,22 @@ def _api_put(path: str, data: dict) -> dict | None:
         return None
 
 
+def _api_get(path: str) -> dict | None:
+    """向 Edict API 发送 GET 请求。"""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{EDICT_API_URL}{path}",
+            method='GET',
+            headers={'Accept': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        log.warning(f'API 调用失败 ({path}): {e}')
+        return None
+
+
 # ── 命令 → API 调用 ──
 
 # 缓存 API 可用性
@@ -197,17 +215,20 @@ def cmd_create(task_id, title, state, org, official, remark=None):
 
     if _check_api():
         edict_state = _STATE_TO_EDICT.get(state, state.lower())
+        target_dept = org if (org or '').strip() and org not in _CENTRAL_ORGS else ''
+        actor = _infer_agent_id()
         result = _api_post('/api/tasks', {
+            'taskId': task_id,
             'title': title,
-            'description': remark or f'下旨：{title}',
-            'priority': '中',
-            'assignee_org': org,
-            'creator': official,
-            'tags': [task_id],
-            'meta': {'legacy_id': task_id, 'legacy_state': state},
+            'official': official,
+            'priority': 'normal',
+            'targetDept': target_dept,
+            'initialState': edict_state,
+            'actor': actor,
+            'source': 'kanban-cli-api',
         })
         if result:
-            log.info(f'✅ 创建 {task_id} → Edict {result.get("task_id", "?")} | {title[:30]}')
+            log.info(f'✅ 创建 {task_id} → Edict {result.get("taskId", "?")} | {title[:30]}')
             return
 
     # 降级
@@ -222,11 +243,10 @@ def cmd_state(task_id, new_state, now_text=None):
     if _check_api():
         edict_state = _STATE_TO_EDICT.get(new_state, new_state.lower())
         agent = _infer_agent_id()
-        # 需要先通过 legacy_id 查找 edict task_id
-        # 暂用 legacy_id tag 搜索
-        result = _api_post(f'/api/tasks/by-legacy/{task_id}/transition', {
+        result = _api_post(f'/api/tasks/{task_id}/transition', {
             'new_state': edict_state,
-            'agent': agent,
+            'actor': agent,
+            'source': 'kanban-cli-api',
             'reason': now_text or f'状态更新为 {new_state}',
         })
         if result:
@@ -244,8 +264,9 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     clean_remark = _sanitize_remark(remark)
     if _check_api():
         agent = _infer_agent_id()
-        result = _api_post(f'/api/tasks/by-legacy/{task_id}/progress', {
-            'agent': agent,
+        result = _api_post(f'/api/tasks/{task_id}/progress', {
+            'actor': agent,
+            'source': 'kanban-cli-api',
             'content': f'流转: {from_dept} → {to_dept} | {clean_remark}',
         })
         if result:
@@ -260,9 +281,10 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
 def cmd_done(task_id, output_path='', summary=''):
     if _check_api():
         agent = _infer_agent_id()
-        result = _api_post(f'/api/tasks/by-legacy/{task_id}/transition', {
-            'new_state': 'done',
-            'agent': agent,
+        result = _api_post(f'/api/tasks/{task_id}/transition', {
+            'new_state': 'Done',
+            'actor': agent,
+            'source': 'kanban-cli-api',
             'reason': summary or '任务已完成',
         })
         if result:
@@ -277,9 +299,10 @@ def cmd_done(task_id, output_path='', summary=''):
 def cmd_block(task_id, reason):
     if _check_api():
         agent = _infer_agent_id()
-        result = _api_post(f'/api/tasks/by-legacy/{task_id}/transition', {
-            'new_state': 'blocked',
-            'agent': agent,
+        result = _api_post(f'/api/tasks/{task_id}/transition', {
+            'new_state': 'Blocked',
+            'actor': agent,
+            'source': 'kanban-cli-api',
             'reason': reason,
         })
         if result:
@@ -318,13 +341,16 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
     if _check_api():
         agent = _infer_agent_id()
         # 更新进度
-        _api_post(f'/api/tasks/by-legacy/{task_id}/progress', {
-            'agent': agent,
+        _api_post(f'/api/tasks/{task_id}/progress', {
+            'actor': agent,
+            'source': 'kanban-cli-api',
             'content': clean,
         })
         # 更新 todos
         if parsed_todos:
-            _api_put(f'/api/tasks/by-legacy/{task_id}/todos', {
+            _api_put(f'/api/tasks/{task_id}/todos', {
+                'actor': agent,
+                'source': 'kanban-cli-api',
                 'todos': parsed_todos,
             })
         log.info(f'📡 {task_id} 进展: {clean[:40]}...')
@@ -340,11 +366,34 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
         status = 'not-started'
 
     if _check_api():
-        # 读取现有 todos，更新后写回
-        # 这里简化处理，直接发进度更新
         agent = _infer_agent_id()
-        _api_post(f'/api/tasks/by-legacy/{task_id}/progress', {
-            'agent': agent,
+        task = _api_get(f'/api/tasks/{task_id}')
+        if task:
+            todos = list(task.get('todos') or [])
+            existing = next((td for td in todos if str(td.get('id')) == str(todo_id)), None)
+            if existing:
+                existing['status'] = status
+                if title:
+                    existing['title'] = title
+                if detail:
+                    existing['detail'] = detail
+            else:
+                item = {'id': str(todo_id), 'title': title, 'status': status}
+                if detail:
+                    item['detail'] = detail
+                todos.append(item)
+            result = _api_put(f'/api/tasks/{task_id}/todos', {
+                'actor': agent,
+                'source': 'kanban-cli-api',
+                'todos': todos,
+            })
+            if result:
+                log.info(f'✅ {task_id} todo: {todo_id} → {status}')
+                return
+
+        _api_post(f'/api/tasks/{task_id}/progress', {
+            'actor': agent,
+            'source': 'kanban-cli-api',
             'content': f'Todo #{todo_id}: {title} → {status}',
         })
         log.info(f'✅ {task_id} todo: {todo_id} → {status}')

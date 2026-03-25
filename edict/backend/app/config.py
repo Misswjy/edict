@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # ── Legacy 兼容 ──
     legacy_data_dir: str = "../data"
     legacy_tasks_file: str = "../data/tasks_source.json"
+    enable_legacy_task_routes: bool = False
 
     # ── 调度参数 ──
     stall_threshold_sec: int = 180

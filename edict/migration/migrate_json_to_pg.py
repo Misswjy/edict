@@ -58,6 +58,15 @@ def parse_legacy_datetime(value: str | None, fallback: datetime | None = None) -
     return fallback or datetime.now(timezone.utc)
 
 
+def parse_legacy_timestamp(value: Any, fallback: datetime | None = None) -> datetime:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    raw = str(value or "").strip()
+    if raw and raw.replace(".", "", 1).isdigit():
+        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+    return parse_legacy_datetime(raw, fallback=fallback)
+
+
 def coerce_task_state(value: str | None) -> TaskState:
     raw = str(value or "").strip()
     candidate = LEGACY_STATE_FALLBACKS.get(raw, raw)
@@ -398,7 +407,7 @@ def parse_legacy_court_session(entry: dict) -> dict[str, object] | None:
         return None
 
     session_id = str(normalized["session_id"])
-    updated_at = parse_legacy_datetime(str(normalized.get("updated_at") or ""))
+    updated_at = parse_legacy_timestamp(normalized.get("updated_at"))
     stable_key = f"legacy-court-session:{session_id}:{updated_at.isoformat()}:{normalized.get('phase')}:{normalized.get('round')}"
     return {
         "audit_id": uuid.uuid5(uuid.NAMESPACE_URL, stable_key),

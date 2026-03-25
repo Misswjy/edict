@@ -101,6 +101,43 @@ def test_parse_legacy_morning_sidecars_to_audit_snapshots(tmp_path: Path):
     assert brief_entry["payload"]["brief"]["categories"]["政治"][0]["title"] == "迁移演练"
 
 
+def test_parse_legacy_court_session_keeps_numeric_timestamps_stable():
+    migrator = _load_migrator()
+
+    entry = migrator.parse_legacy_court_session(
+        {
+            "session_id": "sess-legacy-1",
+            "topic": "迁移朝议",
+            "task_id": "JJC-COURT-001",
+            "officials": [],
+            "messages": [],
+            "phase": "discussing",
+            "round": 2,
+            "created_at": 1_742_860_800.0,
+            "updated_at": 1_742_861_234.0,
+        }
+    )
+
+    assert entry is not None
+    assert entry["ts"].isoformat() == "2025-03-25T00:07:14+00:00"
+    assert entry["payload"]["session"]["updated_at"] == 1_742_861_234.0
+    same_entry = migrator.parse_legacy_court_session(
+        {
+            "session_id": "sess-legacy-1",
+            "topic": "迁移朝议",
+            "task_id": "JJC-COURT-001",
+            "officials": [],
+            "messages": [],
+            "phase": "discussing",
+            "round": 2,
+            "created_at": 1_742_860_800.0,
+            "updated_at": 1_742_861_234.0,
+        }
+    )
+    assert same_entry is not None
+    assert same_entry["audit_id"] == entry["audit_id"]
+
+
 def test_analyze_migration_sources_reports_sidecars(tmp_path: Path):
     migrator = _load_migrator()
 

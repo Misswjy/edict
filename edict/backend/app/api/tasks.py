@@ -26,6 +26,7 @@ class ActorPayload(BaseModel):
 
 
 class TaskCreate(ActorPayload):
+    taskId: str = ""
     title: str
     official: str = "中书令"
     priority: str = "normal"
@@ -33,6 +34,7 @@ class TaskCreate(ActorPayload):
     templateId: str = ""
     templateParams: dict = Field(default_factory=dict)
     targetDept: str = ""
+    initialState: str = TaskState.Sili.value
 
 
 class TaskTransition(ActorPayload):
@@ -116,17 +118,27 @@ async def queue_metrics(svc: TaskService = Depends(get_task_service)):
 
 @router.post("", status_code=201)
 async def create_task(body: TaskCreate, svc: TaskService = Depends(get_task_service)):
-    task = await svc.create_task(
-        title=body.title,
-        official=body.official,
-        priority=body.priority,
-        lane=body.lane,
-        template_id=body.templateId,
-        template_params=body.templateParams,
-        target_dept=body.targetDept,
-        actor=_actor(body),
-    )
-    return {"taskId": task.id, "state": task.state.value}
+    try:
+        initial_state = TaskState(canonicalize_state(body.initialState))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        task = await svc.create_task(
+            task_id=body.taskId or None,
+            title=body.title,
+            official=body.official,
+            priority=body.priority,
+            lane=body.lane,
+            template_id=body.templateId,
+            template_params=body.templateParams,
+            target_dept=body.targetDept,
+            initial_state=initial_state,
+            actor=_actor(body),
+        )
+        return {"taskId": task.id, "state": task.state.value}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/{task_id}")

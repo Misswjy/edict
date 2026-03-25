@@ -78,7 +78,8 @@ app.include_router(officials.router, prefix="/api", tags=["officials-compat"])
 app.include_router(admin_actions.router, prefix="/api", tags=["admin-actions-compat"])
 app.include_router(court_discuss.router, prefix="/api", tags=["court-discuss-compat"])
 app.include_router(websocket.router, tags=["websocket"])
-app.include_router(legacy.router, prefix="/api/tasks", tags=["legacy"])
+if settings.enable_legacy_task_routes:
+    app.include_router(legacy.router, prefix="/api/tasks", tags=["legacy"])
 
 
 @app.get("/health")
