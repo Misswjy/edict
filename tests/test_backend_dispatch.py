@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 
@@ -391,3 +392,155 @@ def test_orchestrator_acknowledges_recovered_stale_events(monkeypatch):
     asyncio.run(worker._recover_pending())
 
     assert worker.bus.acks == [(TOPIC_TASK_STATUS, GROUP, "9-0")]
+
+
+def test_dispatch_worker_recovers_stale_dispatch_events_and_acks(monkeypatch):
+    _stub_backend_config(monkeypatch)
+    from edict.backend.app.workers.dispatch_worker import CONSUMER, GROUP, DispatchWorker, TOPIC_TASK_DISPATCH
+
+    class FakeBus:
+        def __init__(self):
+            self.acks = []
+            self.published = []
+            self.completed = []
+
+        async def claim_stale(self, topic, group, consumer, min_idle_ms=0, count=0):
+            assert topic == TOPIC_TASK_DISPATCH
+            assert group == GROUP
+            assert consumer == CONSUMER
+            return [
+                (
+                    "7-0",
+                    {
+                        "trace_id": "JJC-TEST-RECOVER-1",
+                        "payload": {
+                            "task_id": "JJC-TEST-RECOVER-1",
+                            "agent": "gongbu",
+                            "message": "请继续推进",
+                            "state": "Doing",
+                            "dispatch_key": "auto:JJC-TEST-RECOVER-1:Doing:v3:gongbu",
+                            "version": 3,
+                        },
+                        "meta": {
+                            "dispatch_key": "auto:JJC-TEST-RECOVER-1:Doing:v3:gongbu",
+                            "version": 3,
+                        },
+                    },
+                )
+            ]
+
+        async def claim_dispatch_execution(self, dispatch_key, ttl_sec=0):
+            return "acquired"
+
+        async def publish(self, **kwargs):
+            self.published.append(kwargs)
+            return "1-0"
+
+        async def ack(self, topic, group, entry_id):
+            self.acks.append((topic, group, entry_id))
+
+        async def mark_dispatch_execution_complete(self, dispatch_key, **kwargs):
+            self.completed.append((dispatch_key, kwargs))
+
+    worker = DispatchWorker(max_concurrent=1)
+    worker.bus = FakeBus()
+
+    async def fake_call_openclaw(agent, message, task_id, trace_id):
+        return {"returncode": 0, "stdout": "ok", "stderr": ""}
+
+    worker._call_openclaw = fake_call_openclaw
+
+    asyncio.run(worker._recover_pending())
+
+    assert worker.bus.acks == [(TOPIC_TASK_DISPATCH, GROUP, "7-0")]
+    assert len(worker.bus.published) == 2
+    assert worker.bus.published[0]["dedupe_key"] == "dispatch-heartbeat:auto:JJC-TEST-RECOVER-1:Doing:v3:gongbu:start"
+    assert worker.bus.published[1]["dedupe_key"] == "dispatch-output:auto:JJC-TEST-RECOVER-1:Doing:v3:gongbu"
+    assert len(worker.bus.completed) == 1
+
+
+def test_scheduler_scan_publishes_stalled_event_before_retry(monkeypatch):
+    _stub_backend_config(monkeypatch)
+    task_service_module, _ = _import_task_service_with_stubs(monkeypatch)
+    from edict.backend.app.task_contract import TaskState, make_actor_context
+
+    class FakeSession:
+        async def commit(self):
+            return None
+
+    class FakeBus:
+        def __init__(self):
+            self.calls = []
+
+        async def publish(self, **kwargs):
+            self.calls.append(kwargs)
+            return "1-0"
+
+    svc = task_service_module.TaskService(FakeSession(), FakeBus())
+    now = datetime.now(timezone.utc)
+    task = task_service_module.Task(
+        id="JJC-TEST-STALL-1",
+        title="停滞任务",
+        official="工部尚书",
+        org="工部",
+        state=TaskState.Doing,
+        now="处理中",
+        eta="-",
+        block="无",
+        output="",
+        ac="",
+        priority="normal",
+        lane="standard",
+        review_round=0,
+        archived=False,
+        template_id="",
+        template_params={},
+        target_dept="工部",
+        prev_state="",
+        state_version=4,
+        flow_log=[],
+        progress_log=[],
+        consult_log=[],
+        todos=[],
+        scheduler={
+            "enabled": True,
+            "stallThresholdSec": 60,
+            "maxRetry": 2,
+            "retryCount": 0,
+            "escalationLevel": 0,
+            "autoRollback": True,
+            "lastProgressAt": (now - timedelta(minutes=5)).isoformat(),
+            "stallSince": None,
+        },
+        created_at=now - timedelta(hours=1),
+        updated_at=now - timedelta(minutes=5),
+    )
+
+    async def fake_list_tasks(limit=500):
+        return [task]
+
+    retries = []
+
+    async def fake_scheduler_retry(task_id, reason="", actor=None):
+        retries.append((task_id, reason, actor.actor_id if actor else ""))
+        return {"ok": True, "message": "retried"}
+
+    svc.list_tasks = fake_list_tasks
+    svc.scheduler_retry = fake_scheduler_retry
+
+    result = asyncio.run(svc.scheduler_scan(threshold_sec=60, actor=make_actor_context("sili", source="scheduler")))
+
+    assert result["count"] == 1
+    assert result["actions"][0]["action"] == "retry"
+    assert len(retries) == 1
+    assert retries[0][0] == "JJC-TEST-STALL-1"
+    assert "停滞" in retries[0][1]
+    assert retries[0][2] == "sili"
+    assert len(svc.bus.calls) == 1
+    stalled_event = svc.bus.calls[0]
+    assert stalled_event["topic"] == "task.stalled"
+    assert stalled_event["event_type"] == "task.scheduler.stalled"
+    assert stalled_event["dedupe_key"] == "task-stalled:JJC-TEST-STALL-1:Doing:v4"
+    assert stalled_event["payload"]["retryCount"] == 0
+    assert stalled_event["payload"]["thresholdSec"] == 60
+    assert stalled_event["payload"]["stalledSec"] >= 300

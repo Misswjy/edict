@@ -18,12 +18,14 @@ import signal
 import subprocess
 
 from ..config import get_settings
-from ..services.event_bus import (
-    EventBus,
-    TOPIC_TASK_DISPATCH,
-    TOPIC_AGENT_THOUGHTS,
+from ..event_contract import (
     TOPIC_AGENT_HEARTBEAT,
+    TOPIC_AGENT_THOUGHTS,
+    TOPIC_TASK_DISPATCH,
+    build_agent_heartbeat_dedupe_key,
+    build_agent_output_dedupe_key,
 )
+from ..services.event_bus import EventBus
 
 log = logging.getLogger("edict.dispatcher")
 
@@ -119,7 +121,7 @@ class DispatchWorker:
                 producer="dispatcher",
                 payload={"task_id": task_id, "agent": agent, "dispatch_key": dispatch_key, "version": version},
                 meta={"dispatch_key": dispatch_key, "version": version},
-                dedupe_key=f"dispatch-heartbeat:{dispatch_key}:start" if dispatch_key else "",
+                dedupe_key=build_agent_heartbeat_dedupe_key(dispatch_key),
             )
 
             try:
@@ -141,7 +143,7 @@ class DispatchWorker:
                         "version": version,
                     },
                     meta={"dispatch_key": dispatch_key, "version": version},
-                    dedupe_key=f"dispatch-output:{dispatch_key}" if dispatch_key else "",
+                    dedupe_key=build_agent_output_dedupe_key(dispatch_key),
                 )
                 if dispatch_key:
                     await self.bus.mark_dispatch_execution_complete(

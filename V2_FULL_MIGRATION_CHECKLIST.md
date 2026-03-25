@@ -514,9 +514,9 @@
 
 #### P1-10. 所有关键副作用改为事件驱动
 
-- [ ] 将任务创建、状态变更、派发、咨询、todo 更新、完成、升级、回滚全部标准化为事件
-- [ ] 明确 topic 命名与事件负载 schema
-- [ ] 统一 dedupe key 规则
+- [x] 将任务创建、状态变更、派发、咨询、todo 更新、完成、升级、回滚全部标准化为事件 已完成✅
+- [x] 明确 topic 命名与事件负载 schema 已完成✅
+- [x] 统一 dedupe key 规则 已完成✅
 
 涉及文件：
 
@@ -533,6 +533,14 @@
 风险点：
 
 - 没有统一 dedupe 规则时，最容易产生重复执行与幂等灾难
+
+落地结果：
+
+- 已新增 `edict/backend/app/event_contract.py` 作为 v2 事件契约清单，集中定义关键 topic、payload 最小字段集合与 dedupe 规则
+- `TaskService` 已统一通过共享 helper 生成创建、状态变更、todo、升级等 dedupe key；`DispatchWorker` 的 heartbeat / output 也改为统一 helper
+- 调度扫描已补发 `task.stalled / task.scheduler.stalled` 事件；回滚状态事件补充 `transition_kind=rollback`，便于后续投影和回放识别
+- `/api/events/topics` 与 `docs/task-dispatch-architecture.md` 已暴露 topic/schema/dedupe 约定
+- 已验证 `82 passed`：覆盖同状态版本防重复派发、worker stale pending reclaim 恢复、legacy/v2 契约回归
 
 #### P1-11. 补齐事件投影
 

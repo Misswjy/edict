@@ -4,6 +4,24 @@ import hashlib
 import hmac
 from datetime import datetime, timezone
 
+from edict.backend.app.event_contract import (
+    EVENT_TOPIC_SCHEMAS,
+    TOPIC_AGENT_TODO_UPDATE,
+    TOPIC_TASK_COMPLETED,
+    TOPIC_TASK_CREATED,
+    TOPIC_TASK_DISPATCH,
+    TOPIC_TASK_ESCALATED,
+    TOPIC_TASK_STALLED,
+    TOPIC_TASK_STATUS,
+    build_auto_dispatch_key,
+    build_consult_dispatch_key,
+    build_manual_dispatch_key,
+    build_task_created_dedupe_key,
+    build_task_escalated_dedupe_key,
+    build_task_stalled_dedupe_key,
+    build_task_state_dedupe_key,
+    build_task_todos_dedupe_key,
+)
 from edict.backend.app.task_contract import (
     build_audit_entry,
     authorize_consultation,
@@ -116,3 +134,31 @@ def test_actor_context_preserves_request_metadata_and_signature(monkeypatch):
     assert entry["request_id"] == request_id
     assert entry["source"] == "dashboard"
     assert entry["signature_verified"] is True
+
+
+def test_event_topic_catalog_covers_key_side_effects():
+    expected_topics = {
+        TOPIC_TASK_CREATED,
+        TOPIC_TASK_STATUS,
+        TOPIC_TASK_COMPLETED,
+        TOPIC_TASK_DISPATCH,
+        TOPIC_AGENT_TODO_UPDATE,
+        TOPIC_TASK_STALLED,
+        TOPIC_TASK_ESCALATED,
+    }
+
+    assert expected_topics <= set(EVENT_TOPIC_SCHEMAS)
+    assert "task.consult.request" in EVENT_TOPIC_SCHEMAS[TOPIC_TASK_DISPATCH]["event_types"]
+    assert "transition_kind" in EVENT_TOPIC_SCHEMAS[TOPIC_TASK_STATUS]["meta_required"]
+    assert "task.scheduler.stalled" in EVENT_TOPIC_SCHEMAS[TOPIC_TASK_STALLED]["event_types"]
+
+
+def test_event_dedupe_helpers_are_version_scoped():
+    assert build_task_created_dedupe_key("JJC-EVT-1", 2) == "task-created:JJC-EVT-1:v2"
+    assert build_task_state_dedupe_key("JJC-EVT-1", "Doing", 4) == "task-state:JJC-EVT-1:Doing:v4"
+    assert build_task_todos_dedupe_key("JJC-EVT-1", 4, "req-001") == "task-todos:JJC-EVT-1:v4:req-001"
+    assert build_task_stalled_dedupe_key("JJC-EVT-1", "Doing", 4) == "task-stalled:JJC-EVT-1:Doing:v4"
+    assert build_task_escalated_dedupe_key("JJC-EVT-1", 4, 2) == "scheduler-escalate:JJC-EVT-1:v4:level2"
+    assert build_auto_dispatch_key("JJC-EVT-1", "Doing", 4, "gongbu") == "auto:JJC-EVT-1:Doing:v4:gongbu"
+    assert build_manual_dispatch_key("JJC-EVT-1", "Doing", 4, "gongbu", request_id="req-001") == "manual:JJC-EVT-1:Doing:v4:gongbu:req-001"
+    assert build_consult_dispatch_key("JJC-EVT-1", "Assigned", 4, "shangshu", "gongbu", "req-001") == "consult:JJC-EVT-1:Assigned:v4:shangshu:gongbu:req-001"

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends
 
 from ..db import get_db
+from ..event_contract import EVENT_TOPIC_SCHEMAS
 from ..models.event import Event
 from ..services.event_bus import get_event_bus
 
@@ -67,23 +68,16 @@ async def stream_info(topic: str = Query(description="Stream topic")):
 @router.get("/topics")
 async def list_topics():
     """列出所有可用事件 topic。"""
-    from ..services.event_bus import (
-        TOPIC_TASK_CREATED,
-        TOPIC_TASK_STATUS,
-        TOPIC_TASK_DISPATCH,
-        TOPIC_TASK_COMPLETED,
-        TOPIC_TASK_STALLED,
-        TOPIC_AGENT_THOUGHTS,
-        TOPIC_AGENT_HEARTBEAT,
-    )
     return {
         "topics": [
-            {"name": TOPIC_TASK_CREATED, "description": "任务创建"},
-            {"name": TOPIC_TASK_STATUS, "description": "状态变更"},
-            {"name": TOPIC_TASK_DISPATCH, "description": "Agent 派发"},
-            {"name": TOPIC_TASK_COMPLETED, "description": "任务完成"},
-            {"name": TOPIC_TASK_STALLED, "description": "任务停滞"},
-            {"name": TOPIC_AGENT_THOUGHTS, "description": "Agent 思考流"},
-            {"name": TOPIC_AGENT_HEARTBEAT, "description": "Agent 心跳"},
+            {
+                "name": topic,
+                "description": schema["description"],
+                "eventTypes": list(schema.get("event_types") or []),
+                "payloadRequired": list(schema.get("payload_required") or []),
+                "metaRequired": list(schema.get("meta_required") or []),
+                "dedupeRule": schema.get("dedupe_rule", ""),
+            }
+            for topic, schema in EVENT_TOPIC_SCHEMAS.items()
         ]
     }

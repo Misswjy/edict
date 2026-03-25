@@ -12,6 +12,23 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..event_contract import (
+    TOPIC_AGENT_TODO_UPDATE,
+    TOPIC_TASK_COMPLETED,
+    TOPIC_TASK_CREATED,
+    TOPIC_TASK_DISPATCH,
+    TOPIC_TASK_ESCALATED,
+    TOPIC_TASK_STALLED,
+    TOPIC_TASK_STATUS,
+    build_auto_dispatch_key,
+    build_consult_dispatch_key,
+    build_manual_dispatch_key,
+    build_task_created_dedupe_key,
+    build_task_escalated_dedupe_key,
+    build_task_stalled_dedupe_key,
+    build_task_state_dedupe_key,
+    build_task_todos_dedupe_key,
+)
 from ..models.task import Task
 from ..task_contract import (
     TERMINAL_STATES,
@@ -26,8 +43,6 @@ from ..task_contract import (
     authorize_todos,
     authorize_transition,
     build_audit_entry,
-    build_consult_key,
-    build_dispatch_key,
     canonicalize_lane,
     canonicalize_state,
     central_queue_owner,
@@ -43,15 +58,7 @@ from ..task_contract import (
     review_transition,
     validate_transition,
 )
-from .event_bus import (
-    EventBus,
-    TOPIC_AGENT_TODO_UPDATE,
-    TOPIC_TASK_COMPLETED,
-    TOPIC_TASK_CREATED,
-    TOPIC_TASK_DISPATCH,
-    TOPIC_TASK_ESCALATED,
-    TOPIC_TASK_STATUS,
-)
+from .event_bus import EventBus
 
 log = logging.getLogger("edict.task_service")
 
@@ -129,7 +136,7 @@ class TaskService:
             producer=actor.actor_id,
             payload=task.to_dict(),
             meta=self._event_meta(actor, task),
-            dedupe_key=f"task-created:{task.id}:v{task.state_version}",
+            dedupe_key=build_task_created_dedupe_key(task.id, int(task.state_version or 1)),
         )
         await self._audit("task.create", actor, True, task_id=task.id, to_state=task.state.value, payload={"title": title})
         return task
@@ -267,7 +274,7 @@ class TaskService:
             )
             raise PermissionError(deny_reason)
 
-        consult_key = build_consult_key(
+        consult_key = build_consult_dispatch_key(
             task.id,
             task.state.value,
             int(task.state_version or 1),
@@ -368,7 +375,7 @@ class TaskService:
             producer=actor.actor_id,
             payload={"task_id": task.id, "items": task.todos, "source_of_truth": "tasks.todos"},
             meta=self._event_meta(actor, task, {"source_of_truth": "tasks.todos"}),
-            dedupe_key=f"task-todos:{task.id}:{actor.request_id}",
+            dedupe_key=build_task_todos_dedupe_key(task.id, int(task.state_version or 1), actor.request_id),
         )
         await self._audit("task.todos", actor, True, task_id=task_id, from_state=task.state.value, payload={"todo_count": len(todos), "source_of_truth": "tasks.todos"})
         return task
@@ -447,7 +454,7 @@ class TaskService:
         task.state = TaskState(canonicalize_state(task_dict["state"]))
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
-        await self._publish_state_event(task, actor, old_state, reason)
+        await self._publish_state_event(task, actor, old_state, reason, transition_kind=action)
         await self._audit(f"task.{action}", actor, True, task_id=task.id, from_state=old_state, to_state=task.state.value, payload={"reason": reason})
         return {"ok": True, "message": f"{task.id} {'已叫停' if action == 'stop' else '已取消' if action == 'cancel' else '已恢复'}"}
 
@@ -489,7 +496,7 @@ class TaskService:
         task.state = TaskState(canonicalize_state(task_dict["state"]))
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
-        await self._publish_state_event(task, actor, current_state, comment)
+        await self._publish_state_event(task, actor, current_state, comment, transition_kind=f"review.{action}")
         await self._maybe_fast_track_assigned(task)
         await self._audit(f"review.{action}", actor, True, task_id=task.id, from_state=current_state, to_state=task.state.value, payload={"comment": comment})
         return {"ok": True, "message": f"{task.id} {'已准奏' if action == 'approve' else '已驳回'}"}
@@ -527,7 +534,7 @@ class TaskService:
         task.state = TaskState(canonicalize_state(task_dict["state"]))
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
-        await self._publish_state_event(task, actor, current_state, remark)
+        await self._publish_state_event(task, actor, current_state, remark, transition_kind="advance")
         await self._maybe_fast_track_assigned(task)
         await self._audit("task.advance", actor, True, task_id=task.id, from_state=current_state, to_state=next_state, payload={"comment": comment})
         return {"ok": True, "message": f"{task.id} 已推进到 {next_state}"}
@@ -711,9 +718,9 @@ class TaskService:
             trace_id=task.id,
             event_type="task.scheduler.escalated",
             producer=actor.actor_id,
-            payload={"task_id": task.id, "state": state, "target": target, "reason": reason},
+            payload={"task_id": task.id, "state": state, "target": target, "reason": reason, "level": next_level, "task": task.to_dict()},
             meta=self._event_meta(actor, task, {"level": next_level}),
-            dedupe_key=f"scheduler-escalate:{task.id}:v{task.state_version}:level{next_level}",
+            dedupe_key=build_task_escalated_dedupe_key(task.id, int(task.state_version or 1), next_level),
         )
         await self._audit("scheduler.escalate", actor, True, task_id=task.id, from_state=state, to_state=state, target_agent=target, payload={"reason": reason, "level": next_level})
         return {"ok": True, "message": f"{task.id} 已升级至{target_label}", "escalationLevel": next_level}
@@ -745,7 +752,7 @@ class TaskService:
         task.state = TaskState(canonicalize_state(task_dict["state"]))
         task.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
-        await self._publish_state_event(task, actor, old_state, reason or "scheduler rollback")
+        await self._publish_state_event(task, actor, old_state, reason or "scheduler rollback", transition_kind="rollback")
         await self._audit("scheduler.rollback", actor, True, task_id=task.id, from_state=old_state, to_state=snap_state, payload={"reason": reason})
         return {"ok": True, "message": f"{task.id} 已回滚到 {snap_state}"}
 
@@ -780,6 +787,14 @@ class TaskService:
             self._apply_task_dict(task, task_dict)
             task.updated_at = now_dt
             await self.db.commit()
+            await self._publish_stalled_event(
+                task,
+                actor,
+                stalled_sec=stalled_sec,
+                threshold_sec=task_threshold,
+                retry_count=retry_count,
+                escalation_level=level,
+            )
 
             if retry_count < max_retry:
                 result = await self.scheduler_retry(task.id, reason=f"停滞 {stalled_sec} 秒", actor=actor)
@@ -850,7 +865,15 @@ class TaskService:
         result = await self.db.execute(stmt)
         return int(result.scalar_one())
 
-    async def _publish_state_event(self, task: Task, actor: ActorContext, from_state: str, reason: str) -> None:
+    async def _publish_state_event(
+        self,
+        task: Task,
+        actor: ActorContext,
+        from_state: str,
+        reason: str,
+        *,
+        transition_kind: str = "transition",
+    ) -> None:
         topic = TOPIC_TASK_COMPLETED if task.state.value in TERMINAL_STATES else TOPIC_TASK_STATUS
         task_payload = task.to_dict()
         await self.bus.publish(
@@ -869,8 +892,38 @@ class TaskService:
                 "_stateVersion": task_payload.get("_stateVersion", int(task.state_version or 1)),
                 "task": task_payload,
             },
+            meta=self._event_meta(actor, task, {"transition_kind": transition_kind}),
+            dedupe_key=build_task_state_dedupe_key(task.id, task.state.value, int(task.state_version or 1)),
+        )
+
+    async def _publish_stalled_event(
+        self,
+        task: Task,
+        actor: ActorContext,
+        *,
+        stalled_sec: int,
+        threshold_sec: int,
+        retry_count: int,
+        escalation_level: int,
+    ) -> None:
+        task_payload = task.to_dict()
+        await self.bus.publish(
+            topic=TOPIC_TASK_STALLED,
+            trace_id=task.id,
+            event_type="task.scheduler.stalled",
+            producer=actor.actor_id,
+            payload={
+                "task_id": task.id,
+                "state": task.state.value,
+                "org": task.org,
+                "stalledSec": int(stalled_sec),
+                "thresholdSec": int(threshold_sec),
+                "retryCount": int(retry_count),
+                "escalationLevel": int(escalation_level),
+                "task": task_payload,
+            },
             meta=self._event_meta(actor, task),
-            dedupe_key=f"task-state:{task.id}:{task.state.value}:v{task.state_version}",
+            dedupe_key=build_task_stalled_dedupe_key(task.id, task.state.value, int(task.state_version or 1)),
         )
 
     async def _publish_dispatch_request(
@@ -883,12 +936,12 @@ class TaskService:
         manual: bool,
     ) -> None:
         task_dict = task.to_dict()
-        dispatch_key = build_dispatch_key(
+        build_key = build_manual_dispatch_key if manual else build_auto_dispatch_key
+        dispatch_key = build_key(
             task.id,
             task.state.value,
             int(task.state_version or 1),
             target_agent,
-            manual=manual,
             request_id=actor.request_id,
         )
         await self.bus.publish(

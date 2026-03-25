@@ -27,6 +27,28 @@
 - 若输入载荷使用 `consult_log` / `scheduler` / `template_id` 等存储别名，服务层必须在入库前统一折叠为对外快照语义。
 - 在 `todos` 独立投影真正上线前，禁止再引入“同时写 `tasks.todos` 和 `todos` 表但不对账”的临时实现。
 
+## V2 事件契约
+
+`P1-10` 起，v2 关键副作用统一受 [`edict/backend/app/event_contract.py`](/Users/xingzhan/Documents/edict/edict/backend/app/event_contract.py) 约束，规则如下：
+
+| Topic | 代表副作用 | 事件类型 | 负载最小集合 | dedupe 规则 |
+|---|---|---|---|---|
+| `task.created` | 创建任务 | `task.created` | `id/title/state/org/_stateVersion` | `task-created:{task_id}:v{version}` |
+| `task.status` | 非终态流转 | `task.state.*` | `task_id/from/to/reason/org/targetDept/lane/_stateVersion/task` | `task-state:{task_id}:{to_state}:v{version}` |
+| `task.completed` | 终态收敛 | `task.state.*` | 同 `task.status` | 同 `task.status` |
+| `task.dispatch` | 派发与横向咨询 | `task.dispatch.request` / `task.consult.request` | `task_id/agent/message/state/dispatch_key/version/task` | 统一使用 `build_dispatch_key / build_consult_key` |
+| `agent.todo.update` | todo 快照更新 | `task.todos.updated` | `task_id/items/source_of_truth` | `task-todos:{task_id}:v{version}:{request_id}` |
+| `task.stalled` | 停滞检测 | `task.scheduler.stalled` | `task_id/state/org/stalledSec/thresholdSec/retryCount/escalationLevel/task` | `task-stalled:{task_id}:{state}:v{version}` |
+| `task.escalated` | 调度升级 | `task.scheduler.escalated` | `task_id/state/target/reason/level/task` | `scheduler-escalate:{task_id}:v{version}:level{level}` |
+| `agent.heartbeat` | 派发执行起点 | `agent.dispatch.start` | `task_id/agent/dispatch_key/version` | `dispatch-heartbeat:{dispatch_key}:start` |
+| `agent.thoughts` | Agent 输出/思考流 | `agent.output` | `task_id/agent/output/return_code/dispatch_key/version` | `dispatch-output:{dispatch_key}` |
+
+统一约束：
+
+- `meta.version` 必须与任务 `_stateVersion` 对齐，作为跨 topic 幂等边界。
+- `meta.source / request_id` 必须保留 control plane 与 actor 上下文，便于 durable audit 回溯。
+- Dispatcher 与 Orchestrator 都依赖 Redis Streams pending reclaim；worker 崩溃后通过 `XAUTOCLAIM` 认领未 ACK 事件继续执行。
+
 **文档概览图**
 
 制度单一真相源：
