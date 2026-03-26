@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 from edict.backend.app.services.agent_config_service import (
     build_agent_config_payload,
+    get_agents_status_payload,
     heartbeat_from_agent_status,
     list_remote_skills,
     project_model_change_log,
@@ -126,6 +128,48 @@ def test_build_officials_payload_uses_task_snapshots_and_agent_status(tmp_path: 
     assert gongbu["tasks_done"] == 1
     assert gongbu["heartbeat"]["status"] == "active"
     assert payload["top_official"] == gongbu["label"]
+
+
+def test_get_agents_status_payload_uses_gateway_probe_and_mounted_openclaw_home(tmp_path: Path, monkeypatch):
+    oclaw = tmp_path / ".openclaw"
+    (oclaw / "workspace-gongbu").mkdir(parents=True)
+    sessions_dir = oclaw / "agents" / "gongbu" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "sess-1": {
+                    "updatedAt": int(datetime.now().timestamp() * 1000),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "edict.backend.app.services.agent_config_service._check_gateway_alive",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "edict.backend.app.services.agent_config_service._check_gateway_probe",
+        lambda gateway_url: gateway_url == "http://host.docker.internal:18789/",
+    )
+    monkeypatch.setattr(
+        "edict.backend.app.services.agent_config_service._check_agent_process",
+        lambda agent_id: False,
+    )
+
+    payload = get_agents_status_payload(
+        openclaw_home_override=oclaw,
+        gateway_url="http://host.docker.internal:18789/",
+    )
+
+    gongbu = next(item for item in payload["agents"] if item["id"] == "gongbu")
+    assert payload["gateway"]["alive"] is True
+    assert payload["gateway"]["probe"] is True
+    assert payload["gateway"]["status"] == "🟢 运行中"
+    assert gongbu["hasWorkspace"] is True
+    assert gongbu["status"] == "running"
 
 
 def test_morning_config_returns_defaults_when_missing(tmp_path: Path):

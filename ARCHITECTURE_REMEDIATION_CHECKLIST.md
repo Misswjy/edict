@@ -2,704 +2,446 @@
 
 > 项目：三省六部 / Edict / OpenClaw 多 Agent 协作系统
 >
-> 更新时间：2026-03-24
+> 更新时间：2026-03-26
 >
-> 目的：将当前架构评估结论沉淀为可执行的整改清单，按风险级别排序，便于分阶段落地。
->
-> 注：仓库内 source-based legacy runtime 已于 2026-03-25 物理删除；本文档中的 legacy 文件引用保留为历史整改上下文。
+> 用途：把本轮架构评估结论收敛成可执行的改造总表，作为项目根目录的统一整改基线。
 
-## 总体判断
+## 1. 文档定位
 
-当前项目的制度化多 Agent 架构方向正确，核心优势在于：
+这不是历史回顾文档，也不是“已经完成”的迁移庆功文档，而是一份面向当前仓库状态的落地清单。
 
-- 将多 Agent 协作从自由对话升级为制度化流转
-- 将质量控制前置到执行前
-- 将任务过程暴露为可审计、可干预、可观测的活动流
+当前基线必须按下面事实理解：
 
-当前项目的主要风险在于：
+- v2 主链路是 `edict/backend/app/**`、`edict/frontend/src/**`、`edict/migration/**`
+- legacy source runtime 已移除，`dashboard/dashboard.html` 与 `dashboard/server.py` 不再是仓库内可维护源码
+- `dashboard/dist/index.html` 仅是冻结产物，不应继续当作主实现入口
+- 兼容与回滚资产仍然存在，主要集中在 `scripts/**`、`data/*.json`、`ops/cutover/**`
 
-- 新旧两套架构长期并存，存在明显漂移风险
-- 状态机、权限矩阵、数据模型未实现单一真相源
-- 旧控制面对并发写入和幂等派发的保护不足
-- 新事件驱动后端的主链路尚未完全收敛
+因此，本清单的目标不是“再造一套系统”，而是：
 
-整改建议按照 `P0 -> P1 -> P2 -> P3` 顺序推进。
+1. 修正仍会影响 v2 主链路正确性的阻断项
+2. 收敛兼容层边界，防止 legacy / v2 / cutover 三套语义继续漂移
+3. 补齐生产可用性，包括可观测性、安全默认值和运维路径
+4. 清理已删除 legacy runtime 遗留的测试、文档和构建噪音
 
----
+## 2. 优先级总览
 
-## P0 立即处理
+| 优先级 | 目标 | 结果定义 |
+| --- | --- | --- |
+| P0 | 先止血，修正真实运行风险 | 本地、Docker、cutover 环境都能稳定运行主链路 |
+| P1 | 收敛主链路契约与可靠性 | 任务契约、派发、审计、实时链路不再多头定义 |
+| P2 | 提升可运维性和使用体验 | Dashboard、告警、文档、兼容边界更适合长期维护 |
+| P3 | 做治理收尾 | 删除不该继续存在的历史包袱，降低后续演进成本 |
 
-### 1. 统一任务数据模型、状态机和迁移脚本
+## 3. P0 阻断项
 
-状态：已完成（2026-03-24）
+### P0-1. 修正 Agent 回调地址与服务发现
 
-风险级别：极高
+问题背景：
 
-问题：
+- `edict/backend/app/workers/dispatch_worker.py` 在子进程环境中硬编码 `EDICT_API_URL=http://localhost:{settings.port}`
+- `edict/scripts/kanban_update_edict.py` 也默认回调 `http://localhost:8000`
+- 这在本机开发时可工作，但在 Docker / compose / 多服务网络中，`localhost` 往往指向 Agent 容器自身，不一定是后端服务
 
-- 新后端 ORM、Alembic、TaskService、旧脚本中的任务结构已不一致
-- 同一任务在不同运行模式下可能产生不同字段和状态语义
+改造动作：
 
-整改动作：
+- [ ] 为后端新增显式配置项，例如 `agent_callback_base_url` 或 `public_api_base_url`
+- [ ] 将 `dispatch_worker.py` 改为优先使用显式配置，而不是默认拼接 `localhost`
+- [ ] 让 `edict/scripts/kanban_update_edict.py` 与 worker 共享同一套回调地址约定
+- [ ] 在 `edict/docker-compose.yml` 中为 dispatcher / orchestrator / agent 执行环境注入正确服务地址
+- [ ] 补一组“本机开发 + Docker 服务发现”回归测试，防止后续改回隐式 localhost
 
-- 统一任务主键、组织字段、状态字段、调度字段命名
-- 明确唯一状态集合与合法迁移路径
-- 重写或修正 Alembic 初始迁移，保证与 ORM 一致
-- 将旧脚本状态机与新后端状态机对齐
+涉及文件：
 
-验收标准：
-
-- ORM、迁移脚本、服务层、前端类型定义使用同一套任务结构
-- 同一任务在 JSON 模式与事件模式下语义一致
-
-重点文件：
-
-- [edict/backend/app/models/task.py](/Users/xingzhan/Documents/edict/edict/backend/app/models/task.py)
-- [edict/backend/app/services/task_service.py](/Users/xingzhan/Documents/edict/edict/backend/app/services/task_service.py)
-- [edict/migration/versions/001_initial.py](/Users/xingzhan/Documents/edict/edict/migration/versions/001_initial.py)
-- [scripts/kanban_update.py](/Users/xingzhan/Documents/edict/scripts/kanban_update.py)
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
-
-### 2. 修复旧控制面的并发写风险
-
-状态：已完成（2026-03-24）
-
-风险级别：极高
-
-问题：
-
-- `dashboard/server.py` 大量采用 `load -> mutate -> save` 模式
-- 多请求并发修改 `tasks_source.json` 时可能发生丢更新
-
-整改动作：
-
-- 将所有任务变更路径改为 `atomic_json_update()`
-- 禁止任何绕过锁的直接读改写逻辑
-- 为批量操作增加并发回归测试
+- `edict/backend/app/workers/dispatch_worker.py`
+- `edict/scripts/kanban_update_edict.py`
+- `edict/backend/app/config.py`
+- `edict/docker-compose.yml`
 
 验收标准：
 
-- 根目录 JSON 数据的所有写入都通过文件锁工具
-- 并发执行 stop/resume/review/advance/create 不发生状态覆盖
+- 本机直跑时 agent 可以稳定回调 v2 API
+- Docker 组合启动时 agent 不依赖容器内 `localhost`
+- 回调失败时日志能明确看到解析后的目标地址和失败原因
 
-重点文件：
+建议验证：
 
-- [scripts/file_lock.py](/Users/xingzhan/Documents/edict/scripts/file_lock.py)
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
+```bash
+pytest tests/test_backend_dispatch.py tests/test_v2_task_compat.py -q
+docker compose -f edict/docker-compose.yml up --build backend redis postgres orchestrator dispatcher
+```
 
-### 3. 将权限矩阵从文档规则变成运行时强校验
+### P0-2. 清理已删除 legacy runtime 的残留依赖
 
-状态：已完成（2026-03-24）
+问题背景：
 
-风险级别：极高
+- 旧文档和旧清单仍频繁引用 `dashboard/dashboard.html`、`dashboard/server.py`
+- 当前仓库内只剩 `dashboard/dist/index.html` 与 `dashboard/__pycache__/*`
+- `tests/test_security_defaults.py` 仍然 `import server as srv`，与“source-based legacy runtime 已移除”的仓库现实不一致
 
-问题：
+改造动作：
 
-- `allowAgents` 目前主要体现在配置与文档中
-- 服务端未形成完整的 actor 身份校验与权限拒绝闭环
+- [ ] 明确区分“冻结演示产物”和“仍在维护的源码”，不要再把 `dashboard/dist/**` 当主实现目标
+- [ ] 重写仍依赖 `server.py` 的测试，使其改为验证 v2 代码或显式测试夹具
+- [ ] 删除仓库里不应提交的 `dashboard/__pycache__` 产物，并补 `.gitignore` / 清理说明
+- [ ] 扫描根目录和 `docs/**`，移除所有把已删除 legacy 文件当作当前源码的表述
+- [ ] 保留对 legacy 的引用时，必须明确标注“rollback / frozen image / historical context”
 
-整改动作：
+涉及文件：
 
-- 所有状态推进、审批、派发、进展上报请求都附带 actor
-- 服务端校验 actor 是否有权执行本次动作
-- 增加来源签名或受信通道验证
-- 拒绝无权限状态变更，并落审计日志
-
-验收标准：
-
-- 无权限 Agent 无法推进状态、伪造审批或越级派发
-- 权限拒绝有结构化审计记录
-
-重点文件：
-
-- [docs/task-dispatch-architecture.md](/Users/xingzhan/Documents/edict/docs/task-dispatch-architecture.md)
-- [docker/demo_data/openclaw.json](/Users/xingzhan/Documents/edict/docker/demo_data/openclaw.json)
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
-- [edict/backend/app/api](/Users/xingzhan/Documents/edict/edict/backend/app/api)
-
-### 4. 修正状态机关键语义漏洞
-
-状态：已完成（2026-03-24）
-
-风险级别：极高
-
-问题：
-
-- 进入 `Doing/Next` 时不一定绑定具体执行部门
-- `Cancelled` 目前可恢复，弱化终态语义
-- `Review reject` 与 `Menxia reject` 返工路径不够清晰
-
-整改动作：
-
-- 明确 `Doing/Next` 必须携带目标执行部门或执行 Agent
-- 将 `Cancelled` 改为真终态，若需恢复则新建任务或显式 reopen
-- 区分门下封驳与审查退回的不同返工路径
+- `tests/test_security_defaults.py`
+- `ARCHITECTURE_REMEDIATION_CHECKLIST.md`
+- `V2_FULL_MIGRATION_CHECKLIST.md`
+- `README.md`
+- `README_EN.md`
+- `docs/**`
+- `dashboard/dist/index.html`
 
 验收标准：
 
-- 所有状态推进后，负责部门和负责 Agent 可唯一确定
-- 没有“状态推进了但执行人不确定”的任务
+- 干净 checkout 下不会因为缺失 `dashboard/server.py` 而让测试或文档失真
+- 所有 legacy 引用都带清晰语义：运行中、冻结产物、回滚资产或历史上下文
+- 仓库不再依赖 `__pycache__` 一类副产物“碰巧可用”
 
-重点文件：
+建议验证：
 
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
-- [edict/backend/app/models/task.py](/Users/xingzhan/Documents/edict/edict/backend/app/models/task.py)
-- [scripts/kanban_update.py](/Users/xingzhan/Documents/edict/scripts/kanban_update.py)
+```bash
+pytest tests/test_security_defaults.py tests/test_stage_cutover_routing.py -q
+rg -n "dashboard/server.py|dashboard/dashboard.html" README.md README_EN.md docs ARCHITECTURE_REMEDIATION_CHECKLIST.md V2_FULL_MIGRATION_CHECKLIST.md
+```
 
----
+### P0-3. 冻结兼容边界，避免任务契约继续漂移
 
-## P1 高优先级
+问题背景：
 
-### 5. 明确主架构，只保留一条控制面主线
+- `docs/task-dispatch-architecture.md` 已声明 `config/institution_schema.json` 和 `Task.to_dict()` 是关键真相源
+- 但前端 `edict/frontend/src/api.ts` 仍承担大量兼容字段兜底和别名归一化
+- 如果继续把兼容逻辑散落在前端、后端、迁移脚本、CLI 脚本中，后续每次改字段都会出现“看似兼容、实则漂移”
 
-状态：已完成（2026-03-24）
+改造动作：
 
-风险级别：高
+- [ ] 列出当前仍在被兼容层吞掉的字段别名，并标记哪些是必须长期兼容、哪些只是迁移期遗留
+- [ ] 让 `edict/backend/app/task_contract.py`、`models/task.py`、`frontend/src/api.ts`、`edict/scripts/kanban_update_edict.py` 使用同一份字段映射说明
+- [ ] 继续把部门、状态、权限矩阵的真相源收敛到 `config/institution_schema.json`
+- [ ] 为 `Task.to_dict()` 输出和前端 `normalizeTask()` 之间建立契约测试，而不是依赖人工肉眼对齐
+- [ ] 对新增字段设立规则：必须先改真相源，再改 compat 适配层，最后改 UI 消费层
 
-问题：
+涉及文件：
 
-- 目前同时存在 `dashboard/server.py + JSON` 和 `FastAPI + Redis + Postgres`
-- 前端仍主要连接 legacy API，新架构尚未成为主链路
-
-整改动作：
-
-- 决策主系统：保留 legacy 还是切换 event-driven backend
-- 给非主线架构设定兼容期和退场计划
-- 输出正式迁移路线图
-
-验收标准：
-
-- 前后端都只围绕一套主架构演进
-- 仓库中不再有长期并行但不一致的双实现
-
-重点文件：
-
-- [edict/frontend/src/api.ts](/Users/xingzhan/Documents/edict/edict/frontend/src/api.ts)
-- [edict/backend/app/main.py](/Users/xingzhan/Documents/edict/edict/backend/app/main.py)
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
-
-### 6. 给派发链路加幂等和去重
-
-状态：已完成（2026-03-24）
-
-风险级别：高
-
-问题：
-
-- 自动重试、启动恢复、worker 认领 stale event 都可能重复派发
-- 重复唤醒 Agent 会制造重复工作或重复消息
-
-整改动作：
-
-- 为每次派发生成可重放的唯一 `dispatch_key`
-- 对同一 `task + state + version` 的派发进行去重
-- 将派发结果与 generation/version 绑定
+- `config/institution_schema.json`
+- `docs/task-dispatch-architecture.md`
+- `edict/backend/app/task_contract.py`
+- `edict/backend/app/models/task.py`
+- `edict/frontend/src/api.ts`
+- `edict/frontend/src/store.ts`
+- `edict/scripts/kanban_update_edict.py`
 
 验收标准：
 
-- 服务重启和 worker 恢复后不会重复派发同一轮工作
-- 重试不会造成重复消息洪泛
+- 一个字段的定义、存储、输出、消费和兼容别名能在单一路径中解释清楚
+- 新增或修改字段时，不需要在多个模块重复猜测语义
 
-重点文件：
+建议验证：
 
-- [edict/backend/app/workers/dispatch_worker.py](/Users/xingzhan/Documents/edict/edict/backend/app/workers/dispatch_worker.py)
-- [edict/backend/app/workers/orchestrator_worker.py](/Users/xingzhan/Documents/edict/edict/backend/app/workers/orchestrator_worker.py)
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
+```bash
+pytest tests/test_task_contract.py tests/test_v2_task_compat.py -q
+npm --prefix edict/frontend run build
+```
 
-### 7. 让事件持久化真正闭环
+## 4. P1 主链路可靠性
 
-状态：已完成（2026-03-24）
+### P1-1. 把实时链路真正收敛为“WebSocket 主、轮询兜底”
 
-风险级别：高
+问题背景：
 
-问题：
+- `edict/frontend/src/App.tsx` 启动时无条件调用 `startPolling()`
+- `edict/frontend/src/store.ts` 当前策略是“先连 WebSocket，同时始终保留倒计时轮询”
+- 这已经比纯轮询更好，但仍不是严格意义上的“实时优先、降级明确”
 
-- 新后端已有 `events/thoughts/todos` 表
-- 但 `EventBus.publish()` 当前只写 Redis，不写 Postgres 审计表
+改造动作：
 
-整改动作：
+- [ ] 将轮询改成显式 fallback：只有 WebSocket 断开、数据序号缺口、页面恢复前台时才触发补偿拉取
+- [ ] 为实时消息补齐断线重连后的追平策略，例如按序号补抓或按时间窗口重载
+- [ ] 区分快数据和慢数据，避免 `loadAll()` 在实时健康时反复全量刷新
+- [ ] 在界面上明确展示“实时正常 / 降级兜底 / 数据可能过期”的状态，而不只是一个连接 chip
 
-- 定义事件持久化策略：同步写库或异步 consumer 落库
-- 将关键 topic 持久化到 `events`
-- 视需要持久化 `thoughts` 和结构化 todo 演化过程
+涉及文件：
 
-验收标准：
-
-- `/api/events` 能查询到真实运行事件
-- 审计链可用于回放和排障
-
-重点文件：
-
-- [edict/backend/app/services/event_bus.py](/Users/xingzhan/Documents/edict/edict/backend/app/services/event_bus.py)
-- [edict/backend/app/models/event.py](/Users/xingzhan/Documents/edict/edict/backend/app/models/event.py)
-- [edict/backend/app/api/events.py](/Users/xingzhan/Documents/edict/edict/backend/app/api/events.py)
-
-### 8. 降低门下省与尚书省中央瓶颈
-
-状态：已完成（2026-03-24）
-
-风险级别：高
-
-问题：
-
-- 必审与必派发机制提高质量，但也天然形成队列瓶颈
-- 对中高吞吐任务不够友好
-
-整改动作：
-
-- 引入快车道任务类型
-- 允许带约束的横向咨询，不改变主状态机所有权
-- 为 `Menxia` 与 `Shangshu` 引入 SLA 与排队监控
+- `edict/frontend/src/App.tsx`
+- `edict/frontend/src/store.ts`
+- `edict/frontend/src/api.ts`
+- `edict/backend/app/api/websocket.py`
 
 验收标准：
 
-- 简单任务不会被完整官僚流程过度拖慢
-- 中央节点繁忙时系统仍具备可接受吞吐
+- WebSocket 正常时，不再有高频全量轮询作为常态
+- 断线后能自动恢复，且用户能看见当前是否处于降级模式
+- 慢接口刷新与任务活动流刷新被拆开，避免一次刷新拉太多数据
 
-重点文件：
+建议验证：
 
-- [docs/task-dispatch-architecture.md](/Users/xingzhan/Documents/edict/docs/task-dispatch-architecture.md)
+```bash
+npm --prefix edict/frontend run build
+```
 
----
+补充人工验收：
 
-## P2 中优先级
+- 打开 Dashboard，确认 WebSocket 正常时不会持续全量刷屏
+- 主动断开后端或 WebSocket，确认前端进入兜底刷新并恢复提示
 
-### 9. 将前端从轮询逐步切到事件驱动
+### P1-2. 强化派发链路的失败恢复、幂等与审计
 
-状态：已完成（2026-03-24）
+问题背景：
 
-风险级别：中
+- 当前派发链路已有去重与 stale reclaim 基础
+- 但仍需继续补强“失败归因、重试策略、死信观测、结构化审计”这几个生产化短板
 
-问题：
+改造动作：
 
-- 现有看板主要依赖 5 秒轮询
-- 任务详情活动流再走单独轮询，整体属于准实时
+- [ ] 为重复失败的 dispatch 引入明确重试上限和 dead-letter / quarantine 语义
+- [ ] 将 agent 执行失败的 `stderr`、超时、return code 和 dispatch key 结构化落审计或事件表
+- [ ] 暴露每个 worker 的 backlog、claim、ack、retry、timeout 指标
+- [ ] 为不同失败类型区分自动重试与人工介入，不要所有错误都靠 Streams 重投
 
-整改动作：
+涉及文件：
 
-- 先将任务活动流、Agent 心跳、调度事件切到 WebSocket
-- 轮询保留为兜底刷新机制
-- 为前端增加断线重连与事件序号处理
-
-验收标准：
-
-- 活动流和 Agent 状态变化能够秒级反映
-- 轮询从主机制退为 fallback
-
-重点文件：
-
-- [edict/frontend/src/store.ts](/Users/xingzhan/Documents/edict/edict/frontend/src/store.ts)
-- [edict/backend/app/api/websocket.py](/Users/xingzhan/Documents/edict/edict/backend/app/api/websocket.py)
-
-### 10. 拆分旧版 `dashboard/server.py`
-
-状态：已完成（2026-03-24）
-
-风险级别：中
-
-问题：
-
-- 单文件同时承担静态服务、任务控制、技能管理、调度器、晨报、议政
-- 功能扩张会持续加剧维护成本
-
-整改动作：
-
-- 最少拆分为 `tasks`、`scheduler`、`agents`、`skills`、`morning`、`court`
-- 把纯业务逻辑从 HTTP 层抽离
+- `edict/backend/app/workers/dispatch_worker.py`
+- `edict/backend/app/workers/orchestrator_worker.py`
+- `edict/backend/app/services/event_bus.py`
+- `edict/backend/app/models/event.py`
+- `docs/task-dispatch-architecture.md`
 
 验收标准：
 
-- 单文件职责边界明显收缩
-- 新增功能无需继续堆入一个大文件
+- 同一派发不会因为重启或 reclaim 被重复执行多次
+- 执行失败后，排障人员能查到 task、agent、dispatch key、stderr、重试次数和最终状态
+- backlog 和 dead-letter 状态能被健康检查或指标系统观测到
 
-重点文件：
+建议验证：
 
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
+```bash
+pytest tests/test_backend_dispatch.py -q
+curl -fsS http://127.0.0.1:8000/api/admin/health/deep
+curl -fsS http://127.0.0.1:8000/api/metrics/snapshot
+```
 
-### 11. 建立架构契约测试
+### P1-3. 收紧管理面、安全默认值与敏感信息暴露
 
-状态：已完成（2026-03-24）
+问题背景：
 
-风险级别：中
+- `edict/backend/app/security.py` 已具备脱敏能力，但安全能力还需要从 helper 推到端到端默认值
+- 管理接口、活动流、远程技能和跨域配置都处在真实 trust boundary 上
 
-问题：
+改造动作：
 
-- 当前测试更多覆盖 legacy 脚本和 demo 行为
-- 缺少架构级契约测试
+- [ ] 明确区分本地开发默认值与生产默认值，禁止生产继续依赖空 token 或过宽 CORS
+- [ ] 让“full activity sensitivity”只对明确授权的管理面开放
+- [ ] 审计所有 admin / remote skills / dispatch control 写接口的鉴权与来源校验
+- [ ] 对 prompt、路径、stdout、stderr、token 等高风险字段补端到端脱敏测试
 
-整改动作：
+涉及文件：
 
-- 增加状态机一致性测试
-- 增加权限矩阵测试
-- 增加幂等派发测试
-- 增加 API contract 测试
-
-验收标准：
-
-- 状态机、权限和事件链路修改后能被自动回归验证
-
-重点文件：
-
-- [tests](/Users/xingzhan/Documents/edict/tests)
-
-### 12. 将组织角色和状态定义配置化
-
-状态：已完成（2026-03-24）
-
-风险级别：中
-
-问题：
-
-- 前端、后端、脚本、文档都硬编码了角色与状态定义
-- 长期必然漂移
-
-整改动作：
-
-- 抽出统一 schema 文件
-- 自动生成前端 `PIPE/DEPTS`
-- 自动生成后端枚举/映射
-- 自动生成文档片段和 OpenClaw 配置
+- `edict/backend/app/security.py`
+- `edict/backend/app/config.py`
+- `edict/backend/app/main.py`
+- `edict/backend/app/api/admin_actions.py`
+- `edict/backend/app/api/dashboard.py`
+- `docs/remote-skills-guide.md`
+- `docs/remote-skills-quickstart.md`
 
 验收标准：
 
-- 新增部门、状态、角色时只修改一处
+- 默认部署不暴露高风险管理写接口
+- 活动流默认是 redacted，full 模式必须可审计、可授权
+- 远程技能和管理接口的调用方身份可以被追踪
 
-重点文件：
+建议验证：
 
-- [edict/frontend/src/store.ts](/Users/xingzhan/Documents/edict/edict/frontend/src/store.ts)
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
-- [docker/demo_data/openclaw.json](/Users/xingzhan/Documents/edict/docker/demo_data/openclaw.json)
+```bash
+pytest tests/test_security_defaults.py -q
+python3 -m py_compile edict/backend/app/main.py
+```
 
----
+### P1-4. 把 staged cutover 从“文档存在”升级成“演练可执行”
 
-## P3 优化项
+问题背景：
 
-### 13. 替换原生 `prompt/confirm`，统一为正式交互组件
+- `docs/v2-cutover-runbook.md` 与 `tests/test_stage_cutover_routing.py` 已经定义了 Stage 1-5 的行为契约
+- 但真正的风险在于：文档、Nginx 渲染、compose 服务集、回滚补偿脚本是否始终同步
 
-状态：已完成（2026-03-24）
+改造动作：
 
-风险级别：低
+- [ ] 为每个 stage 绑定一份固定的 smoke checklist，而不是只留概念性说明
+- [ ] 将 `render_stage_routing.py`、runbook、compose 服务名和回滚脚本做一致性校验
+- [ ] 在 cutover 演练中验证“读流量、写流量、worker、scheduler、legacy observation”五个维度，而不只看首页能否打开
+- [ ] 将演练结果沉淀为 `ops/` 下的样例记录，便于复盘和二次执行
 
-问题：
+涉及文件：
 
-- 当前关键任务操作仍依赖浏览器原生弹窗
-- 容易打断操作流，不利于一致体验
-
-整改动作：
-
-- 统一接入 `ConfirmDialog`
-- 增加结构化原因输入、风险提示、权限说明
-
-验收标准：
-
-- stop/cancel/review/advance/scheduler 操作都使用统一交互层
-
-重点文件：
-
-- [edict/frontend/src/components/EdictBoard.tsx](/Users/xingzhan/Documents/edict/edict/frontend/src/components/EdictBoard.tsx)
-- [edict/frontend/src/components/TaskModal.tsx](/Users/xingzhan/Documents/edict/edict/frontend/src/components/TaskModal.tsx)
-- [edict/frontend/src/components/ConfirmDialog.tsx](/Users/xingzhan/Documents/edict/edict/frontend/src/components/ConfirmDialog.tsx)
-
-### 14. 持久化朝堂议政会话
-
-状态：已完成（2026-03-24）
-
-风险级别：低
-
-问题：
-
-- 当前朝堂议政 session 存在进程内存中
-- 服务重启即丢失
-
-整改动作：
-
-- 将 session、消息、总结持久化到数据库或文件
-- 支持会话恢复、历史查询和复盘
+- `docs/v2-cutover-runbook.md`
+- `ops/cutover/render_stage_routing.py`
+- `ops/cutover/cutover_to_v2.sh`
+- `ops/cutover/rollback_to_legacy.sh`
+- `edict/docker-compose.yml`
 
 验收标准：
 
-- 议政记录可以跨重启保留
+- 任一 stage 的流量与服务开关都可以被脚本和测试共同验证
+- 切流失败时可以在固定窗口内回滚并保留回滚期 delta 补偿路径
 
-重点文件：
+建议验证：
 
-- [dashboard/court_discuss.py](/Users/xingzhan/Documents/edict/dashboard/court_discuss.py)
+```bash
+pytest tests/test_stage_cutover_routing.py -q
+```
 
-### 15. 收紧安全默认值
+## 5. P2 运维与体验优化
 
-状态：已完成（2026-03-24）
+### P2-1. 收敛 Dashboard 的信息架构与加载策略
 
-风险级别：低
+问题背景：
 
-问题：
+- `edict/frontend/src/App.tsx` 当前将看板、监控、官员、模型、技能、晨报、朝堂议政等能力集中在单页总控台
+- 这是演示友好方案，但随着数据域增加，容易继续把加载、错误态、空态、权限差异堆在一个入口里
 
-- 默认密码、开放 CORS、管理接口无鉴权
-- 活动流可能暴露 prompt、路径和敏感输出
+改造动作：
 
-整改动作：
+- [ ] 为各个 tab 建立独立的 loading / empty / error / permission denied 状态
+- [ ] 优先按标签页懒加载非主路径数据，降低总控台首屏负担
+- [ ] 把“系统状态条”“任务看板”“运维面板”分成清晰层级，减少一个页面承担过多语义
+- [ ] 重新评估哪些能力必须长期留在总控台，哪些更适合作为二级页面或管理页
 
-- 改掉默认弱凭据
-- 为管理接口增加鉴权
-- 限制跨域来源
-- 为 activity/thinking 输出增加脱敏策略
+涉及文件：
 
-验收标准：
-
-- 默认部署不暴露高风险管理面
-- 活动流可按环境区分敏感级别
-
-重点文件：
-
-- [edict/backend/app/config.py](/Users/xingzhan/Documents/edict/edict/backend/app/config.py)
-- [edict/backend/app/main.py](/Users/xingzhan/Documents/edict/edict/backend/app/main.py)
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
-
----
-
-## 推荐执行顺序
-
-### 第一阶段：先止血
-
-- 确定主架构
-- 统一 schema 和状态机
-- 修正并发写风险
-- 强化权限运行时校验
-
-### 第二阶段：补主链路可靠性
-
-- 做幂等派发
-- 完成事件持久化
-- 修正状态机边界漏洞
-- 建立架构契约测试
-
-### 第三阶段：做实时化和可维护性
-
-- 前端切 WebSocket
-- 拆分 legacy 服务端
-- 配置化组织与状态定义
-
-### 第四阶段：体验与治理收尾
-
-- 统一交互弹窗
-- 持久化议政会话
-- 收紧安全默认值
-
----
-
-## 备注
-
-- 如果项目短期目标仍是可演示 Demo，可优先完成 `P0 + P1`
-- 如果目标是演进为长期运行的 OpenClaw 控制平面，建议完整推进 `P0 -> P2`
-- 本清单默认项目根目录作为后续拆任务与同步状态的基线文档
-
----
-
-## Review 增补 Findings（2026-03-24）
-
-以下问题来自本轮基于 `gstack /review` 标准的追加复核，属于在首版整改清单之外进一步确认出的落地风险。
-
-### A1. 后端 `transition_state()` 在多数非执行态流转后不会同步 `org`
-
-状态：已完成（2026-03-24）
-
-风险级别：高
-
-问题：
-
-- `TaskService.transition_state()` 当前先基于旧任务快照取 `new_org`
-- 但 `validate_transition()` 只会在 `Doing/Next` 时修正执行部门
-- 导致 `Sili -> Zhongshu`、`Zhongshu -> Menxia`、`Review -> Done` 等流转后可能出现 `state` 已变而 `org` 仍是旧值
-
-整改动作：
-
-- 在服务层显式根据目标状态重算 `org`
-- 对非执行态使用状态默认部门
-- 对执行态继续使用 `targetDept/org` 解析
-- 为后端 API 增加 `state/org` 一致性回归测试
+- `edict/frontend/src/App.tsx`
+- `edict/frontend/src/store.ts`
+- `edict/frontend/src/components/**`
 
 验收标准：
 
-- 任意一次合法流转后，`state` 与 `org` 总能对应到唯一责任部门
-- 不存在 “状态已推进但责任部门仍停留在上一环节” 的任务记录
+- 首屏只加载当前视图必要数据
+- 非主路径模块失败时不会拖垮整个总控台
+- 用户能明确理解当前自己在看“业务看板”还是“系统运维面板”
 
-重点文件：
+### P2-2. 建立一致的运维观测面
 
-- [edict/backend/app/services/task_service.py](/Users/xingzhan/Documents/edict/edict/backend/app/services/task_service.py)
-- [edict/backend/app/task_contract.py](/Users/xingzhan/Documents/edict/edict/backend/app/task_contract.py)
+问题背景：
 
-### A2. 事件驱动主链路进入执行态时会丢失派发目标
+- runbook 已要求深健康检查、指标导出和 Prometheus 规则
+- 还需要把这些内容从“文档条目”变成“团队可持续执行的运维面”
 
-状态：已完成（2026-03-24）
+改造动作：
 
-风险级别：高
+- [ ] 统一健康检查、指标快照、队列指标、worker 心跳的字段定义
+- [ ] 将关键指标接入 Prometheus / Grafana 或至少形成标准化截图与巡检步骤
+- [ ] 为 dispatcher / orchestrator / scheduler 定义最低可接受 SLA
+- [ ] 对 WebSocket 长连断开、队列堆积、调度升级、回滚频率建立告警模板
 
-问题：
+涉及文件：
 
-- `task.status` 事件当前只携带 `task_id/from/to/reason`
-- `OrchestratorWorker` 在消费状态事件后调用 `resolve_dispatch_agent()`
-- 当目标状态是 `Doing/Next` 时，若 payload 中没有 `org/targetDept`，就无法解析出六部 Agent
-
-整改动作：
-
-- 为状态事件补齐 `org/targetDept/stateVersion` 等派发必需字段
-- 或者在 orchestrator 中二次查库获取任务完整快照
-- 为执行态自动派发增加集成测试
-
-验收标准：
-
-- `Assigned -> Doing`、`Review -> Doing` 等路径能稳定解析到具体六部 Agent
-- 事件驱动链路不会出现 “状态已切到执行态，但无人接单” 的情况
-
-重点文件：
-
-- [edict/backend/app/services/task_service.py](/Users/xingzhan/Documents/edict/edict/backend/app/services/task_service.py)
-- [edict/backend/app/workers/orchestrator_worker.py](/Users/xingzhan/Documents/edict/edict/backend/app/workers/orchestrator_worker.py)
-- [edict/backend/app/task_contract.py](/Users/xingzhan/Documents/edict/edict/backend/app/task_contract.py)
-
-### A3. `OrchestratorWorker` 的 stale-event 恢复路径未 ACK
-
-状态：已完成（2026-03-24）
-
-风险级别：高
-
-问题：
-
-- `_recover_pending()` 里会认领并处理旧 pending 事件
-- 但处理后没有执行 `ACK`
-- worker 重启后可能持续重复回放旧事件，放大重复派发风险
-
-整改动作：
-
-- 在恢复路径中对成功处理的事件补 `ACK`
-- 为 worker 重启恢复场景增加回归测试
-- 将恢复路径与正常消费路径统一为同一套 “处理成功即 ACK” 逻辑
+- `docs/v2-cutover-runbook.md`
+- `ops/alerts/**`
+- `edict/backend/app/api/dashboard.py`
+- `edict/backend/app/api/websocket.py`
 
 验收标准：
 
-- 重启后 stale event 最多被成功处理一次
-- 恢复模式与正常消费模式行为一致
+- 故障发生时，团队不需要翻源码才能定位问题
+- 观测面可以覆盖任务、事件、worker、WebSocket、cutover 五类核心风险
 
-重点文件：
+### P2-3. 同步文档，把“现在怎么跑”讲清楚
 
-- [edict/backend/app/workers/orchestrator_worker.py](/Users/xingzhan/Documents/edict/edict/backend/app/workers/orchestrator_worker.py)
-- [edict/backend/app/services/event_bus.py](/Users/xingzhan/Documents/edict/edict/backend/app/services/event_bus.py)
+问题背景：
 
-### A4. `archive_all_done` 仍存在批量归档权限绕过
+- 当前仓库同时存在 README、迁移清单、架构文档、cutover runbook、legacy 兼容说明
+- 如果这些文档不一起维护，就会重复把“当前主链路”讲错
 
-状态：已完成（2026-03-24）
+改造动作：
 
-风险级别：中高
+- [ ] 统一 README、README_EN、getting-started、task-dispatch-architecture、cutover runbook 的叙事口径
+- [ ] 把“v2 主链路 / compat 脚本 / rollback 资产 / frozen demo”四种角色写清楚
+- [ ] 删除所有已经不适合当前仓库状态的启动方式、截图路径和源码引用
+- [ ] 为新贡献者补一页最短路径说明：改 v2 去哪里、改 compat 去哪里、不要改哪里
 
-问题：
+涉及文件：
 
-- `handle_archive_task()` 对单任务归档做了 actor 限制
-- 但 `archive_all_done=True` 的分支在权限判断之前直接执行
-- 非高权限 actor 仍可批量归档已完成任务
-
-整改动作：
-
-- 将批量归档纳入与单任务归档一致的权限校验
-- 增加非授权 actor 的拒绝测试
-
-验收标准：
-
-- 非 `emperor/system` actor 无法执行任何批量归档动作
-- 审计日志中能准确记录拒绝原因
-
-重点文件：
-
-- [dashboard/server.py](/Users/xingzhan/Documents/edict/dashboard/server.py)
-- [tests/test_server.py](/Users/xingzhan/Documents/edict/tests/test_server.py)
-
-### A5. 高层 E2E 回归测试尚未与新状态机语义对齐
-
-状态：已完成（2026-03-24）
-
-风险级别：中高
-
-问题：
-
-- 新逻辑已将执行完成改为 `Doing/Next -> Review -> Done`
-- 但现有 E2E 测试仍按旧语义断言 `cmd_done()` 直接进入 `Done`
-- 分支当前不是完整绿灯状态
-
-整改动作：
-
-- 更新 E2E 用例以匹配新的审查链路
-- 明确哪些测试代表旧兼容语义，哪些代表新契约语义
-- 将 E2E 纳入架构整改验收门槛
+- `README.md`
+- `README_EN.md`
+- `docs/getting-started.md`
+- `docs/task-dispatch-architecture.md`
+- `docs/v2-cutover-runbook.md`
+- `AGENTS.md`
 
 验收标准：
 
-- `test_e2e_kanban.py` 与新的状态机规则保持一致
-- 整改分支在单测与高层回归测试上均通过
+- 新成员阅读根文档后，不会误以为 legacy source runtime 仍在仓库中维护
+- 任意一个用户可见操作路径都能在文档中找到对应的当前实现位置
 
-重点文件：
+## 6. P3 治理收尾
 
-- [tests/test_e2e_kanban.py](/Users/xingzhan/Documents/edict/tests/test_e2e_kanban.py)
-- [scripts/kanban_update.py](/Users/xingzhan/Documents/edict/scripts/kanban_update.py)
+### P3-1. 删除不该继续保留的历史噪音
 
-### A6. Alembic 初始迁移仍然依赖运行时代码，且事件模型长度约束不完全一致
+改造动作：
 
-状态：已完成（2026-03-24）
-
-风险级别：中
-
-问题：
-
-- `001_initial.py` 通过 `import app.task_contract` 读取枚举值
-- 这会让 migration 不再是稳定快照，而依赖当前运行时代码
-- 同时 `events.trace_id` 在 ORM 与 migration 中的长度定义仍不一致
-
-整改动作：
-
-- 将 migration 中的枚举常量固化为 revision 当时的快照
-- 对齐 `Event` ORM 与 Alembic 字段长度定义
-- 补一次 schema diff 检查
+- [ ] 清理仓库内无用缓存、过期构建产物、误提交的临时文件
+- [ ] 为必须保留的 dist / demo / sample 数据补“为什么保留”的说明
+- [ ] 将“兼容保留”和“历史残留”分开管理，避免后续继续误改
 
 验收标准：
 
-- 老 revision 在未来代码继续演进后仍可独立执行
-- `alembic revision --autogenerate` 不再生成同一批结构差异
+- 仓库树能一眼看出什么是源码、什么是产物、什么是回滚资产
 
-重点文件：
+### P3-2. 建立持续回归门禁
 
-- [edict/migration/versions/001_initial.py](/Users/xingzhan/Documents/edict/edict/migration/versions/001_initial.py)
-- [edict/backend/app/models/event.py](/Users/xingzhan/Documents/edict/edict/backend/app/models/event.py)
+改造动作：
 
-### A7. 后端数据库模式下的任务 ID 生成仍有并发撞号风险
+- [ ] 将关键 Python 契约测试、前端 build、cutover 路由测试纳入默认 CI
+- [ ] 为修改高风险文件的 PR 增加最小验证清单
+- [ ] 明确哪些改动必须同步更新本清单和迁移文档
 
-状态：已完成（2026-03-24）
+涉及文件：
 
-风险级别：中
-
-问题：
-
-- `TaskService._next_task_id()` 采用 `select existing ids -> max + 1`
-- 在多请求并发创建任务时仍可能生成相同编号
-- legacy JSON 模式已通过文件锁规避，该问题主要留在新后端路径
-
-整改动作：
-
-- 改为数据库序列、独立 counter 表或唯一约束重试
-- 为并发创建增加异步/并发测试
+- `tests/**`
+- `.github/workflows/**`
+- `AGENTS.md`
 
 验收标准：
 
-- 后端并发创建任务时不会出现主键冲突或编号重复
-- 任务编号仍保持可读的 `JJC-YYYYMMDD-NNN` 规则
+- 关键链路不再靠人工记忆维持一致性
 
-重点文件：
+## 7. 建议执行顺序
 
-- [edict/backend/app/services/task_service.py](/Users/xingzhan/Documents/edict/edict/backend/app/services/task_service.py)
-- [edict/backend/app/models/task.py](/Users/xingzhan/Documents/edict/edict/backend/app/models/task.py)
+建议按下面顺序推进，避免返工：
 
-## 本轮验证记录
+1. 先做 `P0-1`，解决真实运行环境里的回调与服务发现问题
+2. 再做 `P0-2`，把“已删除 runtime 仍被依赖”的尾巴清掉
+3. 接着做 `P0-3`，冻结兼容边界与单一真相源
+4. 然后推进 `P1-1` 与 `P1-2`，把实时链路和派发链路做稳
+5. 再完成 `P1-3` 与 `P1-4`，补上生产安全与 cutover 演练闭环
+6. 最后做 `P2` 与 `P3`，统一运维面、界面体验和文档治理
 
-- `python3 -m pytest tests/test_server.py tests/test_kanban.py tests/test_file_lock.py` 通过，`24 passed`
-- `python3 -m pytest tests/test_e2e_kanban.py` 失败，当前有 `2` 个用例仍按旧状态机语义断言
+## 8. 最小验证矩阵
 
-## 建议插队处理顺序
+每完成一个工作流，至少跑与之对应的最小充分验证：
 
-- 先修 `A1 + A2 + A3`，因为它们直接影响新主链路的一致性、派发可靠性和重复执行风险
-- 紧接着修 `A4 + A5`，把权限闭环和回归门槛补齐
-- 最后处理 `A6 + A7`，防止数据库路径在后续迁移和并发场景里继续埋雷
+```bash
+pytest tests/test_task_contract.py tests/test_v2_task_compat.py tests/test_backend_dispatch.py -q
+pytest tests/test_stage_cutover_routing.py tests/test_security_defaults.py -q
+npm --prefix edict/frontend run build
+python3 -m py_compile edict/backend/app/main.py edict/scripts/kanban_update_edict.py
+```
+
+如果改动涉及界面、切流、告警或 Dashboard 行为，还应补：
+
+- 一次浏览器验收
+- 一次 compose 级联调
+- 一次切流脚本 dry-run 或 stage smoke 测试
+
+## 9. Done 定义
+
+只有当下面四件事同时成立，本轮整改才算真正完成：
+
+1. v2 主链路在本机和 Docker 都能稳定运行，不依赖隐式 localhost 或 legacy 缓存产物
+2. 任务契约、前端消费、compat 脚本、cutover 路径使用一致语义，不再多头漂移
+3. 管理面、活动流、派发链路具备最基本的生产可观测性和安全默认值
+4. 文档和测试反映的是“当前仓库真实状态”，而不是已经删除的历史实现

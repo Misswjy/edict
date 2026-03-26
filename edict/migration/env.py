@@ -26,6 +26,15 @@ from app.db import Base
 target_metadata = Base.metadata
 
 
+def _database_url_from_env() -> str | None:
+    return os.getenv("DATABASE_URL") or os.getenv("DATABASE_URL_OVERRIDE")
+
+
+database_url = _database_url_from_env()
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
     url = config.get_main_option("sqlalchemy.url")

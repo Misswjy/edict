@@ -47,6 +47,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://edict:edict_dev_2024@postgres:5432/edict
       REDIS_URL: redis://redis:6379/0
+      OPENCLAW_GATEWAY_URL: http://host.docker.internal:18789/
       PORT: 8000
       DEBUG: "true"
     depends_on:
@@ -54,9 +55,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ../agents:/app/agents:ro
       - ../data:/app/data
+      - ${HOME}/.openclaw:/root/.openclaw:ro
     command: >
       sh -c "
         python -m alembic upgrade head &&

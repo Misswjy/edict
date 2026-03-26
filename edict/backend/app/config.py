@@ -4,6 +4,7 @@ import secrets
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 from .security import split_allowed_origins
@@ -16,7 +17,10 @@ class Settings(BaseSettings):
     postgres_db: str = "edict"
     postgres_user: str = "edict"
     postgres_password: str = "edict_secret_change_me"
-    database_url_override: str | None = None  # 直接设置 DATABASE_URL 环境变量时用
+    database_url_override: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_URL", "DATABASE_URL_OVERRIDE"),
+    )
 
     # ── Redis ──
     redis_url: str = "redis://localhost:6379/0"

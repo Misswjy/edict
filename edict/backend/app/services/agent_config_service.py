@@ -6,12 +6,14 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
 
+from ..config import get_settings
 from ..generated.institution_schema import AGENT_DIRECTORY
 
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -321,6 +323,8 @@ async def get_model_change_log(limit: int = 200) -> list[dict[str, Any]]:
 
 def _check_gateway_alive() -> bool:
     try:
+        if shutil.which("pgrep") is None:
+            return False
         result = subprocess.run(["pgrep", "-f", "openclaw-gateway"], capture_output=True, text=True, timeout=5)
         return result.returncode == 0
     except Exception:
@@ -335,12 +339,25 @@ def _check_gateway_probe(gateway_url: str) -> bool:
         return False
 
 
+def _resolve_gateway_url(gateway_url: str | None = None) -> str:
+    raw = str(gateway_url or get_settings().openclaw_gateway_url or "").strip()
+    if not raw:
+        raw = "http://127.0.0.1:18789/"
+    if not raw.startswith(("http://", "https://")):
+        raw = f"http://{raw}"
+    if not raw.endswith("/"):
+        raw = f"{raw}/"
+    return raw
+
+
 def _check_agent_workspace(agent_id: str, *, openclaw_home_override: Path | None = None) -> bool:
     return (openclaw_home(openclaw_home_override=openclaw_home_override) / f"workspace-{agent_id}").is_dir()
 
 
 def _check_agent_process(agent_id: str) -> bool:
     try:
+        if shutil.which("pgrep") is None:
+            return False
         result = subprocess.run(["pgrep", "-f", f"openclaw.*--agent.*{agent_id}"], capture_output=True, text=True, timeout=5)
         return result.returncode == 0
     except Exception:
@@ -377,10 +394,12 @@ def heartbeat_from_agent_status(status: str) -> dict[str, str]:
 def get_agents_status_payload(
     *,
     openclaw_home_override: Path | None = None,
-    gateway_url: str = "http://127.0.0.1:18789/",
+    gateway_url: str | None = None,
 ) -> dict[str, Any]:
-    gateway_alive = _check_gateway_alive()
-    gateway_probe = _check_gateway_probe(gateway_url) if gateway_alive else False
+    resolved_gateway_url = _resolve_gateway_url(gateway_url)
+    gateway_process_alive = _check_gateway_alive()
+    gateway_probe = _check_gateway_probe(resolved_gateway_url)
+    gateway_alive = gateway_probe or gateway_process_alive
     agents: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for meta in AGENT_DIRECTORY:
@@ -445,7 +464,9 @@ def get_agents_status_payload(
         "gateway": {
             "alive": gateway_alive,
             "probe": gateway_probe,
-            "status": "🟢 运行中" if gateway_probe else ("🟡 进程在但无响应" if gateway_alive else "🔴 未启动"),
+            "processAlive": gateway_process_alive,
+            "url": resolved_gateway_url,
+            "status": "🟢 运行中" if gateway_probe else ("🟡 进程在但无响应" if gateway_process_alive else "🔴 未启动"),
         },
         "agents": agents,
         "checkedAt": now_iso(),
