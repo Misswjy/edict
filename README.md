@@ -53,7 +53,7 @@
 </p>
 </details>
 
-> 🐳 **没有 OpenClaw？** 跑一行 `docker run -p 7891:7891 cft0808/edict` 即可体验完整看板 Demo（预置模拟数据）。
+> 🐳 **没有 OpenClaw？** 跑一行 `docker run -p 7891:7891 cft0808/sansheng-demo` 即可体验历史 Demo（预置模拟数据）。
 
 ---
 
@@ -326,7 +326,7 @@ open http://127.0.0.1:3000
 ```
 
 > 💡 **默认链路**：React 前端 + FastAPI + Postgres + Redis + orchestrator / dispatcher / scheduler worker。
-> legacy `bash scripts/run_loop.sh` + `python3 dashboard/server.py` 仅保留给回滚窗口和历史 Demo。
+> 仓库内 source-based legacy runtime 已移除；回滚窗口和历史 Demo 仅保留冻结镜像 / 备份归档路径。
 
 > 💡 详细教程请看 [Getting Started 指南](docs/getting-started.md)
 
@@ -428,19 +428,14 @@ edict/
 │   ├── libu_hr/                # 吏部 · 人事管理
 │   └── zaochao/SOUL.md         # 早朝官 · 情报枢纽
 ├── dashboard/
-│   ├── dashboard.html          # 军机处看板（单文件 · 零依赖 · ~2500 行）
-│   ├── dist/                   # React 前端构建产物（Docker 镜像内包含，本地可选）
-│   ├── court_discuss.py        # 朝堂议政（多官员 LLM 讨论引擎）
-│   └── server.py               # API 服务器（Python 标准库 · 零依赖 · ~2300 行）
+│   └── dist/                   # React 前端构建产物（历史 Demo 镜像与本地构建共用）
 ├── scripts/
-│   ├── run_loop.sh             # 数据刷新循环（每 15 秒）
 │   ├── kanban_update.py        # 看板 CLI（含旨意数据清洗 + 标题校验）
 │   ├── skill_manager.py        # Skill 管理工具（远程/本地 Skills 添加、更新、移除）
 │   ├── sync_from_openclaw_runtime.py
 │   ├── sync_agent_config.py
 │   ├── sync_officials_stats.py
 │   ├── fetch_morning_news.py
-│   ├── refresh_live_data.py
 │   ├── apply_model_changes.py
 │   └── file_lock.py            # 文件锁（防多 Agent 并发写入）
 ├── tests/
@@ -532,7 +527,7 @@ python3 scripts/skill_manager.py update-remote \
 
 ```bash
 # 添加远程 skill
-curl -X POST http://localhost:7891/api/add-remote-skill \
+curl -X POST http://127.0.0.1:8000/api/add-remote-skill \
   -H "Content-Type: application/json" \
   -d '{
     "agentId": "zhongshu",
@@ -542,7 +537,7 @@ curl -X POST http://localhost:7891/api/add-remote-skill \
   }'
 
 # 查看所有远程 skills
-curl http://localhost:7891/api/remote-skills-list
+curl http://127.0.0.1:8000/api/remote-skills-list
 ```
 
 **官方 Skills Hub：** https://github.com/openclaw-ai/skills-hub
@@ -564,10 +559,10 @@ curl http://localhost:7891/api/remote-skills-list
 | 特点 | 说明 |
 |------|------|
 | **React 18 前端** | TypeScript + Vite + Zustand 状态管理，13 个功能组件 |
-| **纯 stdlib 后端** | `server.py` 基于 `http.server`，零依赖，同时提供 API + 静态文件服务 |
+| **FastAPI 后端** | Postgres + Redis + worker 链路统一承接控制面、任务与活动流 |
 | **Agent 思考可视** | 实时展示 Agent 的 thinking 过程、工具调用、返回结果 |
 | **一键安装** | `install.sh` 自动完成全部配置 |
-| **15 秒同步** | 数据自动刷新，看板倒计时显示 |
+| **事件驱动调度** | orchestrator / dispatcher / scheduler worker 独立运行 |
 | **每日仪式** | 首次打开播放上朝开场动画 |
 | **远程 Skills 生态** | 从 GitHub/URL 一键导入能力，支持版本管理 + CLI + API + UI |
 
@@ -612,7 +607,7 @@ curl http://localhost:7891/api/remote-skills-list
 
 1. **检查 Agent 注册状态**：
 ```bash
-curl -s http://127.0.0.1:7891/api/agents-status | python3 -m json.tool
+curl -s http://127.0.0.1:8000/api/agents-status | python3 -m json.tool
 ```
 确认 `sili` agent 的 `statusLabel` 是 `alive`。
 
@@ -630,7 +625,7 @@ grep -i "error\|fail\|unknown" /tmp/openclaw/openclaw-*.log | tail -20
 4. **强制重试**：
 ```bash
 # 手动触发巡检扫描（自动重试卡住的任务）
-curl -X POST http://127.0.0.1:7891/api/scheduler-scan \
+curl -X POST http://127.0.0.1:8000/api/scheduler-scan \
   -H 'Content-Type: application/json' -d '{"thresholdSec":60}'
 ```
 
@@ -698,7 +693,7 @@ python3 scripts/skill_manager.py import-official-hub --agents zhongshu
 - [x] 端到端测试覆盖（17 个断言）
 - [x] React 18 前端重构（TypeScript + Vite + Zustand · 13 组件）
 - [x] Agent 思考过程可视化（实时 thinking / 工具调用 / 返回结果）
-- [x] 前后端一体化部署（server.py 同时提供 API + 静态文件服务）
+- [x] 前后端 Compose 化部署（React + FastAPI + Postgres + Redis + workers）
 
 ### Phase 2 — 制度深化 🚧
 - [ ] 御批模式（人工审批 + 一键准奏/封驳）

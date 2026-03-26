@@ -262,7 +262,6 @@ function First-Sync {
     $env:REPO_DIR = $REPO_DIR
     try { & $global:PYTHON scripts/sync_agent_config.py } catch { Warn "sync_agent_config 有警告" }
     try { & $global:PYTHON scripts/sync_officials_stats.py } catch { Warn "sync_officials_stats 有警告" }
-    try { & $global:PYTHON scripts/refresh_live_data.py } catch { Warn "refresh_live_data 有警告" }
     Pop-Location
     Log "首次同步完成"
 }
@@ -305,5 +304,5 @@ Write-Host "  3. 打开前端:          http://127.0.0.1:3000"
 Write-Host "  4. FastAPI 健康检查:   http://127.0.0.1:8000/health"
 Write-Host ""
 Warn "首次安装必须配置 API Key，否则 Agent 会报错"
-Warn "legacy run_loop.sh + dashboard/server.py 仅保留给回滚 / 历史 Demo，不再是默认链路"
+Info "legacy 回滚已切到冻结镜像 / 归档资产，不再依赖仓库内本地 server.py + run_loop.sh"
 Info "文档: docs/getting-started.md"

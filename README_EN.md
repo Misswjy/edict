@@ -51,7 +51,7 @@
 </p>
 </details>
 
-> 🐳 **No OpenClaw?** Run `docker run -p 7891:7891 cft0808/edict` to try the full dashboard with simulated data.
+> 🐳 **No OpenClaw?** Run `docker run -p 7891:7891 cft0808/sansheng-demo` to try the historical dashboard demo with simulated data.
 
 ---
 
@@ -189,9 +189,9 @@ This is why Edict produces reliable results on complex tasks: there's a mandator
 ### Docker
 
 ```bash
-docker run -p 7891:7891 cft0808/edict
+docker run -p 7891:7891 cft0808/sansheng-demo
 ```
-Open http://localhost:7891
+Open http://localhost:7891 for the historical demo image.
 
 ### Full Install
 
@@ -220,7 +220,7 @@ open http://127.0.0.1:3000
 ```
 
 > Default dev path is now the v2 stack: React + FastAPI + Postgres + Redis + workers.
-> The legacy `run_loop.sh` + `dashboard/server.py` flow is kept only for rollback windows and historical demos.
+> The source-based legacy runtime has been removed from the repo; rollback and historical demos use the frozen legacy image instead.
 
 > 📖 See [Getting Started Guide](docs/getting-started.md) for detailed walkthrough.
 
@@ -314,9 +314,7 @@ edict/
 │   ├── libu_hr/                #   HR Dept
 │   └── zaochao/                #   Morning Briefing
 ├── dashboard/
-│   ├── dashboard.html          # Dashboard (single file, zero deps, works out of the box)
-│   ├── dist/                   # Pre-built React frontend (included in Docker image)
-│   └── server.py               # API server (stdlib, zero deps)
+│   └── dist/                   # Built React frontend (shared by local builds + historical demo image)
 ├── scripts/                    # Data sync & automation scripts
 │   ├── kanban_update.py        #   Kanban CLI with data sanitization (~300 lines)
 │   └── ...                     #   fetch_morning_news, sync, screenshots, etc.
@@ -335,10 +333,10 @@ edict/
 | | |
 |---|---|
 | **React 18 Frontend** | TypeScript + Vite + Zustand, 13 components |
-| **stdlib Backend** | `server.py` on `http.server`, zero dependencies |
+| **FastAPI Backend** | Postgres + Redis + worker pipeline for tasks, control APIs, and activity feeds |
 | **Agent Thinking Visible** | Real-time display of agent thinking, tool calls, results |
 | **One-click Install** | Workspace creation to Gateway restart |
-| **15s Auto-sync** | Live data refresh with countdown |
+| **Event-driven Workers** | orchestrator / dispatcher / scheduler run independently |
 | **Daily Ceremony** | Immersive opening animation |
 
 ---

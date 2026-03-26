@@ -33,4 +33,6 @@ jobs:
         run: pytest tests/ -v
 
       - name: Shell lint (bash -n)
-        run: bash -n scripts/run_loop.sh
+        run: |
+          bash -n install.sh
+          bash -n ops/tests/validate_ops_syntax.sh

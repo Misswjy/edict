@@ -14,7 +14,7 @@ Defaults are non-destructive:
 - `ops/backup/backup_all.sh`: capture `data/`, Postgres dump, Redis snapshot, and legacy release metadata.
 - `ops/restore/restore_all.sh`: restore snapshots from a backup directory.
 - `ops/cutover/cutover_to_v2.sh`: freeze legacy writes, switch frontend API target, and enable v2 scheduler/worker chain.
-- `ops/cutover/rollback_to_legacy.sh`: freeze v2 writes, restore data snapshot, and switch traffic back to legacy runtime.
+- `ops/cutover/rollback_to_legacy.sh`: freeze v2 writes, restore data snapshot, switch traffic back to legacy runtime, and optionally start the frozen legacy image/service.
 - `ops/cutover/export_v2_delta.py`: export rollback-window delta from v2 task/audit snapshots.
 - `ops/cutover/merge_delta_into_legacy.py`: deterministically merge delta into legacy `tasks_source.json`.
 - `ops/cutover/reinject_tasks_placeholder.sh`: orchestrate export+merge and emit reinjection plan evidence.
@@ -64,6 +64,7 @@ bash ops/cutover/cutover_to_v2.sh --execute --stage 5 \
 ```bash
 bash ops/cutover/rollback_to_legacy.sh --execute \
   --backup-dir ops/backups/<timestamp> \
+  --start-legacy \
   --legacy-api-url http://127.0.0.1:7891
 ```
 

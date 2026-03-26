@@ -21,8 +21,8 @@
 ## 自动截图
 
 ```bash
-# 确保看板服务器正在运行
-python3 dashboard/server.py &
+# 确保 v2 前端和后端正在运行
+docker compose -f edict/docker-compose.yml up --build
 
 # 自动截取全部 11 张截图
 python3 scripts/take_screenshots.py

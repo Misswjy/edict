@@ -6,7 +6,7 @@ import subprocess, os, time
 ROOT = os.path.join(os.path.dirname(__file__), '..')
 VIDEO_DIR = os.path.join(ROOT, 'docs', '_video_tmp')
 OUTPUT_GIF = os.path.join(ROOT, 'docs', 'demo.gif')
-URL = 'http://localhost:7891'
+URL = 'http://127.0.0.1:3000'
 
 def main():
     os.makedirs(VIDEO_DIR, exist_ok=True)

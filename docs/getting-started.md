@@ -66,7 +66,7 @@ open http://127.0.0.1:3000
 
 > 💡 **默认链路**：前端在 `http://127.0.0.1:3000`，FastAPI 在 `http://127.0.0.1:8000`，compose 会一并拉起 Postgres、Redis、orchestrator、dispatcher、scheduler。
 > 🔐 **默认安全值**：v2 backend 默认仅面向本机联调；若要远程暴露控制面，请显式配置 `EDICT_ADMIN_API_TOKEN`，并按需设置 `EDICT_ACTIVITY_SENSITIVITY=full` 与允许的 CORS 来源。
-> ⚠️ **legacy 入口**：`bash scripts/run_loop.sh` + `python3 dashboard/server.py` 仅保留给回滚窗口和历史 Demo，不再是默认开发路径。
+> ⚠️ **legacy 说明**：仓库内 source-based legacy runtime 已移除；回滚窗口和历史 Demo 仅保留冻结镜像 / 备份归档路径。
 
 ## 第五步：发送第一道旨意
 

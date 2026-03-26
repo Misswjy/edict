@@ -14,8 +14,9 @@ MANIFEST_FILE="${MANIFEST_FILE:-ops/cutover/generated/stage-manifest.json}"
 DATA_DIR="${DATA_DIR:-data}"
 FREEZE_MARKER="${FREEZE_MARKER:-ops/cutover/.legacy_write_frozen}"
 START_LEGACY=0
-LEGACY_LOOP_CMD="${LEGACY_LOOP_CMD:-bash scripts/run_loop.sh}"
-LEGACY_SERVER_CMD="${LEGACY_SERVER_CMD:-python3 dashboard/server.py}"
+LEGACY_COMPOSE_FILE="${LEGACY_COMPOSE_FILE:-docker-compose.yml}"
+LEGACY_SERVICE="${LEGACY_SERVICE:-sansheng-demo}"
+LEGACY_START_CMD="${LEGACY_START_CMD:-}"
 ROUTING_HELPER="${ROUTING_HELPER:-ops/cutover/render_stage_routing.py}"
 FREEZE_V2_CMD="${FREEZE_V2_CMD:-}"
 FRONTEND_SWITCH_CMD="${FRONTEND_SWITCH_CMD:-}"
@@ -37,9 +38,10 @@ Options:
   --manifest-file <file>        Generated stage manifest JSON file
   --data-dir <dir>              Legacy data restore target (default: data)
   --freeze-marker <file>        Marker file created during cutover
-  --start-legacy                Start legacy loop/server in background (execute mode only)
-  --legacy-loop-cmd <cmd>       Legacy loop start command
-  --legacy-server-cmd <cmd>     Legacy server start command
+  --start-legacy                Start the frozen legacy image/service (execute mode only)
+  --legacy-compose-file <file>  Legacy compose file (default: docker-compose.yml)
+  --legacy-service <name>       Legacy compose service (default: sansheng-demo)
+  --legacy-start-cmd <cmd>      Optional custom legacy startup command (overrides compose start)
   --freeze-v2-cmd <cmd>         Optional custom command used to freeze v2 writes
   --frontend-switch-cmd <cmd>   Optional custom command used to switch frontend to legacy build
   -h, --help                    Show this help
@@ -143,12 +145,16 @@ while [[ $# -gt 0 ]]; do
       START_LEGACY=1
       shift
       ;;
-    --legacy-loop-cmd)
-      LEGACY_LOOP_CMD="${2:?missing value}"
+    --legacy-compose-file)
+      LEGACY_COMPOSE_FILE="${2:?missing value}"
       shift 2
       ;;
-    --legacy-server-cmd)
-      LEGACY_SERVER_CMD="${2:?missing value}"
+    --legacy-service)
+      LEGACY_SERVICE="${2:?missing value}"
+      shift 2
+      ;;
+    --legacy-start-cmd)
+      LEGACY_START_CMD="${2:?missing value}"
       shift 2
       ;;
     --freeze-v2-cmd)
@@ -243,17 +249,17 @@ run_cmd "${reinject_cmd[@]}"
 
 log "phase 6/7: optional legacy runtime restart"
 if [[ "$START_LEGACY" -eq 1 ]]; then
-  if [[ "$EXECUTE" -eq 1 ]]; then
-    log "+ nohup $LEGACY_LOOP_CMD >/tmp/edict-legacy-loop.log 2>&1 &"
-    nohup bash -lc "$LEGACY_LOOP_CMD" >/tmp/edict-legacy-loop.log 2>&1 &
-    log "+ nohup $LEGACY_SERVER_CMD >/tmp/edict-legacy-server.log 2>&1 &"
-    nohup bash -lc "$LEGACY_SERVER_CMD" >/tmp/edict-legacy-server.log 2>&1 &
+  if [[ -n "$LEGACY_START_CMD" ]]; then
+    run_shell_cmd "$LEGACY_START_CMD"
+  elif [[ "$SKIP_COMPOSE" -eq 1 ]]; then
+    log "legacy compose start skipped by --skip-compose; pass --legacy-start-cmd for local rehearsals."
+  elif [[ -f "$LEGACY_COMPOSE_FILE" ]]; then
+    run_cmd docker compose -f "$LEGACY_COMPOSE_FILE" up -d "$LEGACY_SERVICE"
   else
-    log "[dry-run] nohup $LEGACY_LOOP_CMD >/tmp/edict-legacy-loop.log 2>&1 &"
-    log "[dry-run] nohup $LEGACY_SERVER_CMD >/tmp/edict-legacy-server.log 2>&1 &"
+    log "WARN: legacy compose file not found: $LEGACY_COMPOSE_FILE"
   fi
 else
-  log "legacy processes are not auto-started. use --start-legacy when needed."
+  log "legacy service is not auto-started. use --start-legacy when needed."
 fi
 
 log "phase 7/7: restart frontend in legacy proxy mode"

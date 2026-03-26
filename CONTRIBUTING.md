@@ -1,4 +1,4 @@
-∏# 🤝 参与贡献
+# 🤝 参与贡献
 
 <p align="center">
   <strong>三省六部欢迎各路英雄好汉 ⚔️</strong><br>
@@ -37,7 +37,7 @@ cd edict
 git checkout -b feat/my-awesome-feature
 
 # 4. 开发 & 测试
-python3 dashboard/server.py  # 启动看板验证
+docker compose -f edict/docker-compose.yml up --build  # 启动 v2 栈验证
 
 # 5. 提交
 git add .
@@ -62,28 +62,25 @@ git push origin feat/my-awesome-feature
 # 安装
 ./install.sh
 
-# 启动数据刷新（后台运行）
-bash scripts/run_loop.sh &
-
-# 启动看板服务器
-python3 dashboard/server.py
+# 启动 v2 栈
+docker compose -f edict/docker-compose.yml up --build
 
 # 打开浏览器
-open http://127.0.0.1:7891
+open http://127.0.0.1:3000
 ```
 
-> 💡 **看板开箱即用**：`server.py` 内嵌 `dashboard/dashboard.html`，Docker 镜像包含预构建 React 前端
+> 💡 **默认开发链路**：React 前端 + FastAPI + Postgres + Redis + orchestrator / dispatcher / scheduler worker。
+> 历史 Demo / rollback 仅保留冻结 legacy 镜像，不再依赖仓库内本地 server.py + run_loop.sh。
 
 ### 项目结构速览
 
 | 目录/文件 | 说明 | 改动频率 |
 |----------|------|--------|
-| `dashboard/dashboard.html` | 看板前端（单文件，零依赖，开箱即用） | 🔥 高 |
-| `dashboard/server.py` | API 服务器（stdlib，~2200 行） | 🔥 高 |
+| `edict/frontend/src/**` | React 前端源码（Vite + Zustand） | 🔥 高 |
+| `edict/backend/app/**` | FastAPI / SQLAlchemy / worker 主链路 | 🔥 高 |
 | `agents/*/SOUL.md` | 12 个 Agent 人格模板 | 🔶 中 |
-| `dashboard/court_discuss.py` | 朝堂议政引擎（多官员 LLM 讨论） | 🔶 中 |
 | `scripts/kanban_update.py` | 看板 CLI + 数据清洗 + 状态机校验（~350 行） | 🔶 中 |
-| `scripts/*.py` | 数据同步 / 自动化脚本 | 🔶 中 |
+| `scripts/*.py` | 同步、迁移、截图、自动化脚本 | 🔶 中 |
 | `tests/test_e2e_kanban.py` | E2E 看板测试（24 断言） | 🔶 中 |
 | `install.sh` | 安装脚本 | 🟢 低 |
 
@@ -153,19 +150,18 @@ docs: 更新 README 截图
 
 ```bash
 # 编译检查
-python3 -m py_compile dashboard/server.py
 python3 -m py_compile scripts/kanban_update.py
+python3 -m py_compile edict/backend/app/main.py
 
 # E2E 看板测试（9 场景 17 断言）
 python3 tests/test_e2e_kanban.py
 
-# 验证数据同步
-python3 scripts/refresh_live_data.py
+# 验证工具链 / 数据同步
 python3 scripts/sync_agent_config.py
 
-# 启动服务器验证 API
-python3 dashboard/server.py &
-curl -s http://localhost:7891/api/live-status | python3 -m json.tool | head -20
+# 启动服务验证 API
+docker compose -f edict/docker-compose.yml up --build
+curl -s http://127.0.0.1:8000/api/live-status | python3 -m json.tool | head -20
 ```
 
 ---

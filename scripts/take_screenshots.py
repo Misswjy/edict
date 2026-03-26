@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright
 import time, os
 
 SHOTS = os.path.join(os.path.dirname(__file__), '..', 'docs', 'screenshots')
-URL = 'http://localhost:7891'
+URL = 'http://127.0.0.1:3000'
 
 def main():
     os.makedirs(SHOTS, exist_ok=True)

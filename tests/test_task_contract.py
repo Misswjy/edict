@@ -23,12 +23,16 @@ from edict.backend.app.event_contract import (
     build_task_todos_dedupe_key,
 )
 from edict.backend.app.task_contract import (
+    authorize_agent_wake,
+    authorize_review,
     build_audit_entry,
     authorize_consultation,
     central_queue_owner,
     ensure_task_shape,
     make_actor_context,
+    next_manual_transition,
     queue_sla_seconds,
+    review_transition,
     resolve_state_org,
 )
 
@@ -48,11 +52,76 @@ def test_consultation_authorization_preserves_owner_boundary():
     assert "负责人" in reason or "不允许" in reason
 
 
+def test_manual_transition_contract_keeps_expected_state_and_owner():
+    task = {
+        "id": "JJC-TEST-MANUAL-1",
+        "state": "Assigned",
+        "org": "尚书省",
+        "targetDept": "工部",
+        "lane": "standard",
+    }
+
+    allowed, transition = next_manual_transition(task)
+
+    assert allowed is True
+    assert transition["next_state"] == "Doing"
+    assert transition["to_org"] == "工部"
+
+
+def test_review_transition_contract_keeps_menxia_and_review_paths():
+    menxia_task = {
+        "id": "JJC-TEST-REVIEW-1",
+        "state": "Menxia",
+        "org": "门下省",
+        "targetDept": "工部",
+        "lane": "standard",
+        "review_round": 0,
+    }
+    allowed, approved = review_transition(menxia_task, "approve", "准奏")
+    assert allowed is True
+    assert approved["new_state"] == "Assigned"
+    assert approved["to_org"] == "尚书省"
+
+    review_task = {
+        "id": "JJC-TEST-REVIEW-2",
+        "state": "Review",
+        "org": "尚书省",
+        "targetDept": "工部",
+        "lane": "standard",
+        "review_round": 0,
+    }
+    allowed, rejected = review_transition(review_task, "reject", "退回工部")
+    assert allowed is True
+    assert rejected["new_state"] == "Doing"
+    assert rejected["to_org"] == "工部"
+
+
 def test_queue_sla_uses_fast_lane_thresholds():
     menxia_fast = {"state": "Menxia", "lane": "fast"}
     menxia_standard = {"state": "Menxia", "lane": "standard"}
     assert queue_sla_seconds(menxia_fast) < queue_sla_seconds(menxia_standard)
     assert central_queue_owner("Assigned") == "shangshu"
+
+
+def test_review_and_agent_wake_authorization_boundaries_hold():
+    review_task = {
+        "id": "JJC-TEST-AUTH-1",
+        "state": "Review",
+        "org": "尚书省",
+        "targetDept": "工部",
+        "lane": "standard",
+    }
+    allowed, _ = authorize_review(make_actor_context("emperor", source="test"), review_task, "approve")
+    denied, reason = authorize_review(make_actor_context("gongbu", source="test"), review_task, "approve")
+    assert allowed is True
+    assert denied is False
+    assert "不允许" in reason or "审批" in reason
+
+    wake_allowed, _ = authorize_agent_wake(make_actor_context("sili", source="test"), "menxia")
+    wake_denied, reason = authorize_agent_wake(make_actor_context("gongbu", source="test"), "menxia")
+    assert wake_allowed is True
+    assert wake_denied is False
+    assert "不允许" in reason or "唤醒" in reason
 
 
 def test_resolve_state_org_aligns_non_execution_and_execution_states():

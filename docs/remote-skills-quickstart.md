@@ -2,12 +2,13 @@
 
 ## 5 分钟体验
 
-### 1. 启动服务器
+### 1. 启动 v2 服务
 
 ```bash
 # 确保你在项目根目录
-python3 dashboard/server.py
-# 输出: 三省六部看板启动 → http://127.0.0.1:7891
+docker compose -f edict/docker-compose.yml up --build
+# 前端: http://127.0.0.1:3000
+# API:   http://127.0.0.1:8000
 ```
 
 ### 2. 添加官方 Skill（CLI）
@@ -43,7 +44,7 @@ python3 scripts/skill_manager.py list-remote
 ### 4. 查看 API 响应
 
 ```bash
-curl http://localhost:7891/api/remote-skills-list | jq .
+curl http://127.0.0.1:8000/api/remote-skills-list | jq .
 
 # 输出:
 # {
@@ -115,7 +116,7 @@ python3 scripts/skill_manager.py remove-remote \
 
 ### 在看板中添加 Remote Skill
 
-1. 打开 http://localhost:7891
+1. 打开 http://127.0.0.1:3000
 2. 进入 🔧 **技能配置** 面板
 3. 点击 **➕ 添加远程 Skill** 按钮
 4. 填写表单：
@@ -209,7 +210,7 @@ python3 scripts/skill_manager.py add-remote \
 
 **请求：**
 ```bash
-curl -X POST http://localhost:7891/api/add-remote-skill \
+curl -X POST http://127.0.0.1:8000/api/add-remote-skill \
   -H "Content-Type: application/json" \
   -d '{
     "agentId": "zhongshu",
@@ -238,7 +239,7 @@ curl -X POST http://localhost:7891/api/add-remote-skill \
 列出所有远程 skills。
 
 ```bash
-curl http://localhost:7891/api/remote-skills-list
+curl http://127.0.0.1:8000/api/remote-skills-list
 ```
 
 **响应:**
@@ -267,7 +268,7 @@ curl http://localhost:7891/api/remote-skills-list
 更新远程 skill 为最新版本。
 
 ```bash
-curl -X POST http://localhost:7891/api/update-remote-skill \
+curl -X POST http://127.0.0.1:8000/api/update-remote-skill \
   -H "Content-Type: application/json" \
   -d '{
     "agentId": "zhongshu",
@@ -280,7 +281,7 @@ curl -X POST http://localhost:7891/api/update-remote-skill \
 移除远程 skill。
 
 ```bash
-curl -X POST http://localhost:7891/api/remove-remote-skill \
+curl -X POST http://127.0.0.1:8000/api/remove-remote-skill \
   -H "Content-Type: application/json" \
   -d '{
     "agentId": "zhongshu",
@@ -333,4 +334,3 @@ ls -la ~/.openclaw/workspace-zhongshu/skills/
 - 📚 [完整指南](remote-skills-guide.md)
 - 🏛️ [架构文档](task-dispatch-architecture.md)
 - 🤝 [项目贡献](../CONTRIBUTING.md)
-

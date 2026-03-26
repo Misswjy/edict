@@ -6,6 +6,7 @@ The target is staged migration (Stage 1-5), not one-shot full switch.
 Current repository status:
 - `ops/cutover/cutover_to_v2.sh` now exposes `--stage 1..5` and renders stage-aware frontend proxy routing.
 - `ops/cutover/rollback_to_legacy.sh` renders a legacy-only proxy profile for rollback and observation fallback.
+- `ops/cutover/rollback_to_legacy.sh --start-legacy` now starts the frozen legacy image/service from the root `docker-compose.yml`; the old source-based legacy runtime is no longer present in the repo.
 - This document defines the required behavior contract and validation gate for each stage.
 
 ## 1. Pre-Cutover Backup
@@ -201,6 +202,7 @@ Rollback command:
 ```bash
 bash ops/cutover/rollback_to_legacy.sh --execute \
   --backup-dir ops/backups/<timestamp> \
+  --start-legacy \
   --legacy-api-url http://127.0.0.1:7891
 ```
 

@@ -12,7 +12,7 @@ V2_UPSTREAM_URL="${V2_UPSTREAM_URL:-http://backend:8000}"
 ROUTING_CONFIG_FILE="${ROUTING_CONFIG_FILE:-ops/cutover/generated/frontend-default.conf}"
 MANIFEST_FILE="${MANIFEST_FILE:-ops/cutover/generated/stage-manifest.json}"
 FREEZE_MARKER="${FREEZE_MARKER:-ops/cutover/.legacy_write_frozen}"
-LEGACY_LOOP_PATTERN="${LEGACY_LOOP_PATTERN:-scripts/run_loop.sh}"
+LEGACY_LOOP_PATTERN="${LEGACY_LOOP_PATTERN:-}"
 ROUTING_HELPER="${ROUTING_HELPER:-ops/cutover/render_stage_routing.py}"
 
 usage() {
@@ -31,7 +31,7 @@ Options:
   --routing-config-file <file>  Generated frontend nginx config file
   --manifest-file <file>        Generated stage manifest JSON file
   --freeze-marker <file>        Marker file for frozen legacy write traffic
-  --legacy-loop-pattern <pat>   Process pattern for stopping legacy loop at Stage 4/5
+  --legacy-loop-pattern <pat>   Optional process pattern for stopping a local legacy rehearsal loop
   -h, --help                    Show this help
 EOF
 }
@@ -200,7 +200,9 @@ else
   run_cmd rm -f "$FREEZE_MARKER"
 fi
 if [[ "$STOP_LEGACY_LOOP" -eq 1 ]]; then
-  if [[ "$EXECUTE" -eq 1 ]]; then
+  if [[ -z "$LEGACY_LOOP_PATTERN" ]]; then
+    log "no local legacy loop pattern configured; expect rollback to rely on the frozen legacy image only."
+  elif [[ "$EXECUTE" -eq 1 ]]; then
     log "+ pkill -f '$LEGACY_LOOP_PATTERN' || true"
     pkill -f "$LEGACY_LOOP_PATTERN" || true
   else

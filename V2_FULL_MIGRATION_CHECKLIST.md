@@ -1,5 +1,7 @@
 # V2 全量迁移改造清单
 
+> 说明：自 2026-03-25 起，仓库内 source-based legacy runtime 已物理删除；以下清单中保留的 legacy 文件名主要用于迁移历史、回滚演练记录和对账说明。
+
 > 目标：将当前三省六部系统从 legacy `dashboard/server.py + data/*.json` 架构，完整迁移到 v2 `FastAPI + Redis + Postgres` 事件驱动架构，并最终彻底下线 legacy 运行时。
 
 ## 1. 文档用途
@@ -874,10 +876,10 @@
 
 #### P3-1. legacy 先只读，再删除
 
-- [x] 已完成✅ `dashboard/server.py` 已接入 `ops/cutover/.legacy_write_frozen` 写保护；Stage 5 期间 legacy HTTP 写请求会返回只读错误，并由 `tests/test_server.py` 覆盖 GET/POST 回归
-- [x] 已完成✅ `scripts/file_lock.py` 已对 `tasks_source.json` 底层原子写统一接入 freeze guard，`save_tasks()` / `_atomic_update_tasks()` / `kanban_update.py` / `sync_from_openclaw_runtime.py` 均会在 Stage 5 停止落盘；`scripts/run_loop.sh` 也会跳过 legacy runtime sync 与 scheduler-scan
-- [x] 已完成✅ `edict/backend/app/api/legacy.py` 已默认下线：`app.main` 仅在显式设置 `EDICT_ENABLE_LEGACY_TASK_ROUTES=1` 时才挂载兼容路由，`edict/scripts/kanban_update_edict.py` 也已改为直接使用标准 `/api/tasks/*` 路由
-- [x] 已完成✅ `scripts/run_loop.sh` 在 legacy freeze 生效时会直接退出，`scripts/refresh_live_data.py` 也会在只读阶段跳过 `live_status.json` 刷新；`tests/test_legacy_run_loop.py` 与 `tests/test_refresh_live_data.py` 覆盖该行为
+- [x] 已完成✅ 仓库内 source-based legacy runtime 已物理删除：`dashboard/server.py`、`dashboard/legacy_*.py`、`dashboard/dashboard.html`、`dashboard/court_discuss.py` 不再随仓库分发；rollback 仅依赖冻结 legacy 镜像 / 备份工件
+- [x] 已完成✅ `scripts/file_lock.py` 仍对 `tasks_source.json` 底层原子写统一接入 freeze guard，`kanban_update.py` / `sync_from_openclaw_runtime.py` 在 Stage 5 不会越过只读保护落盘
+- [x] 已完成✅ `edict/backend/app/api/legacy.py` 已物理删除；v2 backend 只保留标准 `/api/tasks/*` 与兼容 dashboard/admin 路由
+- [x] 已完成✅ `scripts/run_loop.sh` 与 `scripts/refresh_live_data.py` 已从仓库移除；相关契约覆盖收敛到 `tests/test_task_contract.py`、`tests/test_backend_dispatch.py`、运维脚本语法校验与回滚演练证据
 
 涉及文件：
 

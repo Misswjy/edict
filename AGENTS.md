@@ -12,39 +12,38 @@
 
 ## 仓库现状总览
 
-这个仓库目前处于「legacy 看板链路 + v2 事件驱动链路」并存阶段。
+这个仓库现在的默认形态是「v2 主链路 + 少量 JSON/回滚遗留资产」。
 
-- `dashboard/` + `scripts/` + `data/` 是当前文档、测试、Demo、运行命令最完整的 legacy 链路
-- `edict/backend/app/**` + `edict/frontend/src/**` + `edict/migration/**` 是正在推进的 v2 拆分式架构
-- `edict/frontend/src/api.ts` 仍明确写着自己在对接 `dashboard/server.py`，说明前端迁移仍带兼容层语义
-- `edict/backend/app/api/legacy.py` 保留了 legacy task id / 兼容接口，改接口时不要默认可以直接删掉兼容层
+- `edict/backend/app/**` + `edict/frontend/src/**` + `edict/migration/**` 是当前默认主链路
+- 仓库内 source-based legacy runtime（`dashboard/server.py`、`dashboard/dashboard.html`、`scripts/run_loop.sh`、`scripts/refresh_live_data.py`）已移除
+- 仍保留的遗留资产主要是 `data/*.json`、`scripts/kanban_update.py`、`scripts/file_lock.py`、`scripts/sync_from_openclaw_runtime.py`、`ops/cutover/merge_delta_into_legacy.py`，用于迁移、shadow、回灌和兼容 CLI
+- 历史 Demo / rollback 依赖冻结 legacy 镜像与备份工件，而不是仓库内本地 legacy 源码
 
 开始改代码前，先判断任务属于哪条链路。不要因为目录名字像“新版”就默认它已经完全替代旧实现。
 
 
 ## 目录判断规则
 
-### 1. legacy 看板链路
+### 1. JSON 兼容 / 回滚遗留链路
 
 优先涉及这些文件：
 
-- `dashboard/server.py`
-- `dashboard/dashboard.html`
 - `scripts/kanban_update.py`
 - `scripts/file_lock.py`
-- `scripts/refresh_live_data.py`
-- `tests/test_server.py`
+- `scripts/sync_from_openclaw_runtime.py`
+- `ops/cutover/merge_delta_into_legacy.py`
+- `docker-compose.yml`
 - `tests/test_kanban.py`
 - `tests/test_e2e_kanban.py`
 - `tests/test_file_lock.py`
 
 这条链路通常对应：
 
-- README 里的默认启动方式
-- 看板 HTTP API
-- 任务状态流转
-- 奏折 / 旨意 / Todo / Flow Log 行为
-- 并发写入、文件锁、调度与叫停恢复
+- JSON shadow / 导入源
+- Agent CLI 状态上报
+- 回滚窗口 delta 回灌
+- 冻结 legacy 镜像的历史 Demo
+- 并发写入与文件锁
 
 ### 2. v2 拆分式链路
 
@@ -66,10 +65,10 @@
 
 如果一个需求同时影响以下任意两项，就按“兼容迁移”处理：
 
-- legacy API 行为
 - `edict/frontend/src/api.ts` 的字段约定
 - `edict/backend/app/task_contract.py` 的状态与 Actor 语义
-- `edict/backend/app/api/legacy.py` 的兼容端点
+- `scripts/kanban_update.py` 的 JSON / CLI 约定
+- `edict/backend/app/api/dashboard.py`、`admin_actions.py` 等兼容端点
 
 这种需求不要只改一处。先检查契约，再决定需要同步哪些层。
 
@@ -161,18 +160,18 @@
 改这些时，至少同时检查：
 
 - `scripts/kanban_update.py`
-- `dashboard/server.py`
 - `edict/backend/app/task_contract.py`
 - `edict/backend/app/api/tasks.py`
-- `edict/backend/app/api/legacy.py`
+- `edict/backend/app/api/dashboard.py`
+- `edict/backend/app/api/admin_actions.py`
 - `edict/frontend/src/api.ts`
 - 相关测试
 
 ### 保持兼容优先
 
-- 当前仓库明显还在迁移中，优先做“增量兼容”，不要轻易移除 legacy 路由或字段。
-- 如果要破坏兼容层，必须同步修改调用方、测试和文档。
-- 不要默认 README 已经全面切到 v2；事实上根文档当前仍主要围绕 legacy 看板。
+- 优先保持 v2 API 对前端、CLI、迁移/回灌工具的兼容，不要重新引入 source-based legacy runtime。
+- 如果要破坏兼容字段或 JSON shadow 约定，必须同步修改调用方、测试和文档。
+- 根文档默认链路已经切到 v2，但历史 Demo / rollback 说明仍会提到冻结 legacy 镜像。
 
 ### Dist 与 Demo 数据不是默认编辑目标
 
@@ -216,13 +215,13 @@ pytest -q
 如果只改 legacy 主链路，至少跑：
 
 ```bash
-pytest tests/test_server.py tests/test_kanban.py tests/test_e2e_kanban.py tests/test_file_lock.py -q
+pytest tests/test_kanban.py tests/test_e2e_kanban.py tests/test_file_lock.py tests/test_task_contract.py -q
 ```
 
 ### 语法级快速检查
 
 ```bash
-python3 -m py_compile dashboard/server.py scripts/kanban_update.py
+python3 -m py_compile scripts/kanban_update.py edict/backend/app/main.py
 ```
 
 ### v2 前端构建
@@ -233,10 +232,10 @@ npm --prefix edict/frontend run build
 
 ### 运行入口
 
-legacy 看板：
+历史 Demo（冻结 legacy 镜像）：
 
 ```bash
-python3 dashboard/server.py
+docker compose up sansheng-demo
 ```
 
 v2 Docker 组合：

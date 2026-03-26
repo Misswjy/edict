@@ -21,7 +21,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .services.event_bus import get_event_bus
 from .api import tasks, agents, events, admin, websocket, dashboard, models as model_api, skills, morning, officials, admin_actions, court_discuss, metrics
-from .api import legacy
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,8 +77,6 @@ app.include_router(officials.router, prefix="/api", tags=["officials-compat"])
 app.include_router(admin_actions.router, prefix="/api", tags=["admin-actions-compat"])
 app.include_router(court_discuss.router, prefix="/api", tags=["court-discuss-compat"])
 app.include_router(websocket.router, tags=["websocket"])
-if settings.enable_legacy_task_routes:
-    app.include_router(legacy.router, prefix="/api/tasks", tags=["legacy"])
 
 
 @app.get("/health")

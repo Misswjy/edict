@@ -694,7 +694,7 @@ def _parse_activity_entry(item):
             'thinking': '💭 Agent考虑到...',  # 内部思维链
             'tools': [
                 {'name': 'bash', 'input_preview': 'cd /src && npm test'},
-                {'name': 'file_read', 'input_preview': 'dashboard/server.py'},
+                {'name': 'file_read', 'input_preview': 'legacy runtime source (removed from repo)'},
             ]
         }
         return entry
@@ -1002,7 +1002,7 @@ GET /api/events/activity/JJC-20260228-E2E
       "thinking": "💭 考虑到项目的复杂性，需要覆盖七个Agent的交互逻辑。单元测试应该采用pytest，集成测试用server.py启动后的HTTP测试...",
       "tools": [
         {"name": "bash", "input_preview": "find . -name '*.py' -type f | wc -l"},
-        {"name": "file_read", "input_preview": "dashboard/server.py (first 100 lines)"}
+        {"name": "file_read", "input_preview": "legacy runtime source (removed from repo)"}
       ]
     },
     // - tool_result (16条)
@@ -1479,7 +1479,7 @@ GET /api/agents-status
 # 第1步：皇上下旨（飞书消息或看板API）
 # ═══════════════════════════════════════════════════════════
 
-curl -X POST http://127.0.0.1:7891/api/create-task \
+curl -X POST http://127.0.0.1:8000/api/create-task \
   -H "Content-Type: application/json" \
   -d '{
     "title": "编写三省六部协议文档",
@@ -1656,7 +1656,7 @@ python3 scripts/kanban_update.py done \
 # 查询最终成果
 # ═══════════════════════════════════════════════════════════
 
-curl http://127.0.0.1:7891/api/task-activity/JJC-20260302-001
+curl http://127.0.0.1:8000/api/task-activity/JJC-20260302-001
 
 # 响应：
 # {
